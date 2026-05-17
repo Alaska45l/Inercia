@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Optional
 from inercia.scraper.feed import extract_upwork_id
 from inercia.scraper.selectors import UPWORK_MAIN
 
@@ -50,7 +52,11 @@ def text_to_markdown(text: str) -> str:
     return "\n\n".join(compact_lines)
 
 
-async def extract_job_markdown(url: str, allow_network: bool = False) -> JobMarkdown:
+async def extract_job_markdown(
+    url: str,
+    allow_network: bool = False,
+    user_data_dir: Optional[Path] = None,
+) -> JobMarkdown:
     upwork_id = extract_upwork_id(url)
     if not allow_network or is_mock_url(url):
         await asyncio.sleep(0)
@@ -60,7 +66,7 @@ async def extract_job_markdown(url: str, allow_network: bool = False) -> JobMark
 
     from inercia.scraper.engine import NAV_TIMEOUT_MS, block_heavy_resources, human_mouse_jitter, stealth_context
 
-    async with stealth_context() as context:
+    async with stealth_context(str(user_data_dir) if user_data_dir is not None else None) as context:
         page = await context.new_page()
         await block_heavy_resources(page)
         try:

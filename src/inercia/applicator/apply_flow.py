@@ -28,6 +28,7 @@ class ApplyPayload:
     cover_letter: str
     screening_answers: dict[str, str] = field(default_factory=dict)
     cv_pdf_path: Optional[Path] = None
+    portfolio_attachment_paths: list[Path] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -47,7 +48,7 @@ def _mock_result(payload: ApplyPayload) -> ApplyFlowResult:
         rate_set=True,
         cover_letter_set=bool(payload.cover_letter.strip()),
         screening_answers_set=len(payload.screening_answers),
-        attachment_set=payload.cv_pdf_path is not None,
+        attachment_set=payload.cv_pdf_path is not None or bool(payload.portfolio_attachment_paths),
         submit_button_found=True,
         stopped_before_submit=True,
     )
@@ -128,10 +129,15 @@ async def prepare_application(
         answer_count = await _fill_screening_answers(page, payload.screening_answers)
 
         attachment_set = False
-        if payload.cv_pdf_path is not None and payload.cv_pdf_path.exists():
+        attachment_paths = [
+            path
+            for path in ([payload.cv_pdf_path] if payload.cv_pdf_path is not None else []) + payload.portfolio_attachment_paths
+            if path.exists()
+        ]
+        if attachment_paths:
             upload = page.locator(UPWORK_ATTACHMENT_INPUT).first
             if await upload.count() > 0:
-                await upload.set_input_files(str(payload.cv_pdf_path), timeout=NAV_TIMEOUT_MS)
+                await upload.set_input_files([str(path) for path in attachment_paths], timeout=NAV_TIMEOUT_MS)
                 attachment_set = True
 
         submit_button_found = await page.locator(UPWORK_SUBMIT_BUTTON).count() > 0

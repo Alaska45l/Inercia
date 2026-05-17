@@ -8,6 +8,8 @@ import signal
 import sqlite3
 import shutil
 import subprocess
+import time
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Optional
 
@@ -23,6 +25,7 @@ from inercia.api.protocol import (
     process_progress,
     scrape_done,
     scrape_progress,
+    scheduler_status,
     settings_state,
     stats_update,
 )
@@ -33,7 +36,6 @@ from inercia.db.manager import (
     get_connection,
     get_connects_spent_today,
     get_proposal,
-    get_runtime_overrides,
     get_session_value,
     init_db,
     set_session_value,
@@ -49,6 +51,9 @@ POLL_INTERVAL_S: float = 2.0
 SESSION_KEY_CONNECTS_TOTAL: str = "connects_total"
 _login_process: Optional[subprocess.Popen[Any]] = None
 _login_profile_dir: Optional[Path] = None
+_scheduler_task: Optional[asyncio.Task[None]] = None
+_scheduler_stop_event: Optional[asyncio.Event] = None
+_scheduler_next_run_at: float = 0.0
 
 
 def _get_connects_total(db_path: Optional[Path] = None) -> int:
@@ -85,6 +90,31 @@ def _bool_from_override(value: str, fallback: bool) -> bool:
     return fallback
 
 
+def _settings_payload(db_path: Optional[Path]) -> dict[str, Any]:
+    settings = get_settings(db_path=db_path)
+    return {
+        "gemini_api_key": settings.gemini_api_key,
+        "opencode_api_key": settings.opencode_api_key,
+        "opencode_base_url": settings.opencode_base_url,
+        "opencode_copywriter_model": settings.opencode_copywriter_model,
+        "opencode_user_agent": settings.opencode_user_agent,
+        "daily_proposal_cap": settings.daily_proposal_cap,
+        "floor_hourly_rate": settings.floor_hourly_rate,
+        "floor_fixed_rate": settings.floor_fixed_rate,
+        "allow_upwork_network": settings.allow_upwork_network,
+        "db_path": str(settings.db_path),
+        "upwork_session_dir": str(settings.upwork_session_dir),
+        "ws_port": settings.ws_port,
+        "has_gemini_key": bool(settings.gemini_api_key),
+        "has_opencode_key": bool(settings.opencode_api_key),
+        "scheduler_interval_min_minutes": settings.scheduler_interval_min_minutes,
+        "scheduler_interval_max_minutes": settings.scheduler_interval_max_minutes,
+        "blacklist_keywords": settings.blacklist_keywords,
+        "upwork_search_filters": asdict(settings.upwork_search_filters),
+        "portfolio_attachments": [str(path) for path in settings.portfolio_attachments],
+    }
+
+
 def _login_browser_pids(profile_dir: Path) -> list[int]:
     needle = f"--user-data-dir={profile_dir}"
     pids: list[int] = []
@@ -98,6 +128,34 @@ def _login_browser_pids(profile_dir: Path) -> list[int]:
         if needle in cmdline:
             pids.append(int(proc_dir.name))
     return pids
+
+
+def _scheduler_status_payload() -> dict[str, Any]:
+    running = _scheduler_task is not None and not _scheduler_task.done()
+    next_run_in_seconds = 0
+    if running and _scheduler_next_run_at > 0:
+        next_run_in_seconds = max(0, int(_scheduler_next_run_at - time.monotonic()))
+    return {"running": running, "next_run_in_seconds": next_run_in_seconds}
+
+
+async def _scheduler_status_callback(wait_seconds: int) -> None:
+    global _scheduler_next_run_at
+    _scheduler_next_run_at = time.monotonic() + wait_seconds
+
+
+async def _run_scheduler(db_path: Optional[Path], stop_event: asyncio.Event) -> None:
+    from inercia.core.scheduler import run_scheduler_loop
+
+    global _scheduler_next_run_at
+    _scheduler_next_run_at = 0.0
+    try:
+        await run_scheduler_loop(
+            db_path=db_path,
+            stop_event=stop_event,
+            status_callback=_scheduler_status_callback,
+        )
+    finally:
+        _scheduler_next_run_at = 0.0
 
 
 async def _terminate_login_browser(profile_dir: Path) -> None:
@@ -216,6 +274,7 @@ async def _send_initial_state(websocket: Any, db_path: Optional[Path]) -> None:
     ready = await asyncio.to_thread(list_ready_proposals, db_path)
     for proposal in ready:
         await _send_json(websocket, proposal_ready(proposal))
+    await _send_json(websocket, scheduler_status(_scheduler_status_payload()))
 
 
 async def _handle_user_approved(proposal_id: int, db_path: Optional[Path]) -> dict[str, Any]:
@@ -223,7 +282,7 @@ async def _handle_user_approved(proposal_id: int, db_path: Optional[Path]) -> di
     if row is None:
         return error_message(f"Proposal not found: {proposal_id}")
 
-    settings = get_settings()
+    settings = get_settings(db_path=db_path)
     submitted_today = await asyncio.to_thread(count_submitted_today, db_path)
     if submitted_today >= settings.daily_proposal_cap:
         return error_message(f"Daily proposal cap reached: {submitted_today}/{settings.daily_proposal_cap}")
@@ -238,6 +297,7 @@ async def _handle_user_approved(proposal_id: int, db_path: Optional[Path]) -> di
         cover_letter=str(row["cover_letter"]),
         screening_answers=_json_loads_object(row["screening_answers"]),
         cv_pdf_path=Path(str(row["cv_pdf_path"])) if row["cv_pdf_path"] else None,
+        portfolio_attachment_paths=settings.portfolio_attachments,
     )
     result = await prepare_application(
         payload,
@@ -278,9 +338,8 @@ async def _handle_run_scrape(payload: dict[str, Any], websocket: Any, db_path: O
     from inercia.core.orchestrator import scrape_query
 
     query = str(payload.get("query", "")).strip()
-    allow_network = bool(payload.get("allow_network", False))
-    if not query:
-        return error_message("query is required")
+    settings = get_settings(db_path=db_path)
+    allow_network = bool(payload.get("allow_network", settings.allow_upwork_network))
     await _send_json(
         websocket,
         scrape_progress({"phase": "starting", "queued": 0, "processed": 0, "failed": 0}),
@@ -288,7 +347,7 @@ async def _handle_run_scrape(payload: dict[str, Any], websocket: Any, db_path: O
     summary = await scrape_query(query=query, db_path=db_path, allow_network=allow_network)
     return scrape_done(
         {
-            "query": query,
+            "query": query or "configured filters",
             "queued": int(summary["queued"]),
             "processed": int(summary["processed"]),
             "inserted": int(summary["inserted"]),
@@ -318,9 +377,9 @@ async def _handle_run_process(payload: dict[str, Any], websocket: Any, db_path: 
 
 
 async def _handle_open_upwork_login(payload: dict[str, Any], websocket: Any, db_path: Optional[Path]) -> dict[str, Any]:
-    del payload, websocket, db_path
+    del payload, websocket
     global _login_process, _login_profile_dir
-    settings = get_settings()
+    settings = get_settings(db_path=db_path)
     profile_dir = settings.upwork_session_dir
     if _login_browser_pids(profile_dir):
         return error_message("Login browser already open")
@@ -345,9 +404,9 @@ async def _handle_open_upwork_login(payload: dict[str, Any], websocket: Any, db_
 
 
 async def _handle_close_upwork_login(payload: dict[str, Any], websocket: Any, db_path: Optional[Path]) -> dict[str, Any]:
-    del payload, websocket, db_path
+    del payload, websocket
     global _login_process, _login_profile_dir
-    settings = get_settings()
+    settings = get_settings(db_path=db_path)
     profile_dir = _login_profile_dir or settings.upwork_session_dir
     if not _login_browser_pids(profile_dir):
         _login_process = None
@@ -399,33 +458,7 @@ async def _handle_get_jobs(payload: dict[str, Any], websocket: Any, db_path: Opt
 
 async def _handle_get_settings(payload: dict[str, Any], websocket: Any, db_path: Optional[Path]) -> dict[str, Any]:
     del payload, websocket
-    settings = await asyncio.to_thread(get_settings)
-    overrides = await asyncio.to_thread(get_runtime_overrides, db_path)
-    daily_proposal_cap = settings.daily_proposal_cap
-    floor_hourly_rate = settings.floor_hourly_rate
-    floor_fixed_rate = settings.floor_fixed_rate
-    allow_upwork_network = settings.allow_upwork_network
-    if "DAILY_PROPOSAL_CAP" in overrides:
-        daily_proposal_cap = int(overrides["DAILY_PROPOSAL_CAP"])
-    if "FLOOR_HOURLY_RATE" in overrides:
-        floor_hourly_rate = float(overrides["FLOOR_HOURLY_RATE"])
-    if "FLOOR_FIXED_RATE" in overrides:
-        floor_fixed_rate = float(overrides["FLOOR_FIXED_RATE"])
-    if "ALLOW_UPWORK_NETWORK" in overrides:
-        allow_upwork_network = _bool_from_override(overrides["ALLOW_UPWORK_NETWORK"], allow_upwork_network)
-    return settings_state(
-        {
-            "daily_proposal_cap": daily_proposal_cap,
-            "floor_hourly_rate": floor_hourly_rate,
-            "floor_fixed_rate": floor_fixed_rate,
-            "allow_upwork_network": allow_upwork_network,
-            "db_path": str(settings.db_path),
-            "upwork_session_dir": str(settings.upwork_session_dir),
-            "ws_port": settings.ws_port,
-            "has_gemini_key": bool(settings.gemini_api_key),
-            "has_opencode_key": bool(settings.opencode_api_key),
-        }
-    )
+    return settings_state(await asyncio.to_thread(_settings_payload, db_path))
 
 
 async def _handle_set_setting(payload: dict[str, Any], websocket: Any, db_path: Optional[Path]) -> dict[str, Any]:
@@ -433,10 +466,20 @@ async def _handle_set_setting(payload: dict[str, Any], websocket: Any, db_path: 
     key = str(payload.get("key", ""))
     value = str(payload.get("value", ""))
     allowed_keys = {
+        "GEMINI_API_KEY",
+        "OPENCODE_API_KEY",
+        "OPENCODE_BASE_URL",
+        "OPENCODE_COPYWRITER_MODEL",
+        "OPENCODE_USER_AGENT",
         "DAILY_PROPOSAL_CAP",
         "FLOOR_HOURLY_RATE",
         "FLOOR_FIXED_RATE",
         "ALLOW_UPWORK_NETWORK",
+        "SCHEDULER_INTERVAL_MIN_MINUTES",
+        "SCHEDULER_INTERVAL_MAX_MINUTES",
+        "blacklist_keywords",
+        "upwork_search_filters",
+        "portfolio_attachments",
     }
     if key not in allowed_keys:
         return error_message(f"Unsupported setting: {key}")
@@ -450,6 +493,30 @@ async def _handle_set_connects_total(payload: dict[str, Any], websocket: Any, db
     await asyncio.to_thread(set_connects_total, total, db_path)
     spent_today = await asyncio.to_thread(get_connects_spent_today, db_path)
     return connects_balance(total, spent_today)
+
+
+async def _handle_start_scheduler(payload: dict[str, Any], websocket: Any, db_path: Optional[Path]) -> dict[str, Any]:
+    del payload, websocket
+    global _scheduler_task, _scheduler_stop_event
+    if _scheduler_task is not None and not _scheduler_task.done():
+        return scheduler_status(_scheduler_status_payload())
+    _scheduler_stop_event = asyncio.Event()
+    _scheduler_task = asyncio.create_task(_run_scheduler(db_path, _scheduler_stop_event))
+    return scheduler_status(_scheduler_status_payload())
+
+
+async def _handle_stop_scheduler(payload: dict[str, Any], websocket: Any, db_path: Optional[Path]) -> dict[str, Any]:
+    del payload, websocket, db_path
+    global _scheduler_task, _scheduler_stop_event, _scheduler_next_run_at
+    if _scheduler_stop_event is not None:
+        _scheduler_stop_event.set()
+    if _scheduler_task is not None and not _scheduler_task.done():
+        _scheduler_task.cancel()
+        await asyncio.gather(_scheduler_task, return_exceptions=True)
+    _scheduler_task = None
+    _scheduler_stop_event = None
+    _scheduler_next_run_at = 0.0
+    return scheduler_status(_scheduler_status_payload())
 
 
 async def _handle_message(message: str, websocket: Any, db_path: Optional[Path]) -> dict[str, Any]:
@@ -483,6 +550,10 @@ async def _handle_message(message: str, websocket: Any, db_path: Optional[Path])
         return await _handle_set_setting(payload, websocket, db_path)
     if message_type == "set_connects_total":
         return await _handle_set_connects_total(payload, websocket, db_path)
+    if message_type == "start_scheduler":
+        return await _handle_start_scheduler(payload, websocket, db_path)
+    if message_type == "stop_scheduler":
+        return await _handle_stop_scheduler(payload, websocket, db_path)
     return error_message(f"Unsupported message type: {message_type}")
 
 
@@ -496,6 +567,7 @@ async def _poll_ready(websocket: Any, db_path: Optional[Path]) -> None:
                 await _send_json(websocket, proposal_ready(proposal))
                 sent.add(proposal_id)
         await _send_json(websocket, await asyncio.to_thread(build_stats, db_path))
+        await _send_json(websocket, scheduler_status(_scheduler_status_payload()))
         await asyncio.sleep(POLL_INTERVAL_S)
 
 
@@ -515,7 +587,7 @@ async def _client_handler(websocket: Any, db_path: Optional[Path]) -> None:
 async def serve(db_path: Optional[Path] = None, host: str = "127.0.0.1", port: Optional[int] = None) -> None:
     from websockets.asyncio.server import serve as websocket_serve
 
-    settings = get_settings()
+    settings = get_settings(db_path=db_path)
     selected_port = port or settings.ws_port
     await asyncio.to_thread(init_db, db_path or settings.db_path)
     async with websocket_serve(lambda websocket: _client_handler(websocket, db_path or settings.db_path), host, selected_port):

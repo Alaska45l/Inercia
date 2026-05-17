@@ -1,23 +1,31 @@
 <script lang="ts">
-  import { lastScrapeResult, runScrape, scrapeRunning } from '../stores/proposals';
+  import {
+    lastScrapeResult,
+    runConfiguredScrape,
+    schedulerStatus,
+    scrapeRunning,
+    startScheduler,
+    stopScheduler
+  } from '../stores/proposals';
 
-  let query = '';
-  let allowNetwork = false;
+  $: minutes = Math.floor($schedulerStatus.next_run_in_seconds / 60);
+  $: seconds = String($schedulerStatus.next_run_in_seconds % 60).padStart(2, '0');
 
   function submitScrape(): void {
-    runScrape(query, allowNetwork);
+    runConfiguredScrape();
   }
 </script>
 
 <section class="control-panel">
   <div class="scraper-row">
-    <input class="control-input" type="text" bind:value={query} placeholder="upwork query" />
-    <label class="toggle-row">
-      <span>Live network</span>
-      <input type="checkbox" bind:checked={allowNetwork} />
-      <span class="toggle-visual" aria-hidden="true"></span>
-    </label>
-    <button class="control-button" type="button" disabled={$scrapeRunning} on:click={submitScrape}>Run</button>
+    <button class="control-button" type="button" disabled={$scrapeRunning} on:click={submitScrape}>Run Scrape</button>
+    {#if $schedulerStatus.running}
+      <button class="control-button login-open" type="button" on:click={stopScheduler}>Stop Bot</button>
+      <div class="status-line">next cycle {minutes}:{seconds}</div>
+    {:else}
+      <button class="control-button" type="button" on:click={startScheduler}>Start Bot</button>
+      <div class="status-line">scheduler stopped</div>
+    {/if}
   </div>
 
   <div class="status-line">

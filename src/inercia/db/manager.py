@@ -8,7 +8,7 @@ from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Optional
 
-from inercia.config import get_settings
+from inercia.config import DEFAULT_BLACKLIST_KEYWORDS, DEFAULT_SETTING_VALUES, RUNTIME_SETTING_KEYS, get_settings
 
 logger = logging.getLogger("inercia.db.manager")
 
@@ -92,7 +92,20 @@ def init_db(db_path: Optional[Path] = None) -> None:
     schema = SCHEMA_PATH.read_text(encoding="utf-8")
     with get_connection(selected_db_path) as conn:
         conn.executescript(schema)
+        _ensure_session_defaults(conn)
     logger.info("Database initialized at %s", selected_db_path)
+
+
+def _ensure_session_defaults(conn: sqlite3.Connection) -> None:
+    for key in ("blacklist_keywords", "upwork_search_filters", "portfolio_attachments"):
+        conn.execute(
+            """
+            INSERT INTO sessions (key, value)
+            VALUES (?, ?)
+            ON CONFLICT(key) DO NOTHING;
+            """,
+            (key, DEFAULT_SETTING_VALUES[key]),
+        )
 
 
 def _json_or_none(value: Any) -> Optional[str]:
@@ -310,13 +323,14 @@ def get_session_value(key: str, db_path: Optional[Path] = None) -> Optional[str]
     return str(row["value"])
 
 
+def list_session_values(db_path: Optional[Path] = None) -> dict[str, str]:
+    with get_connection(db_path) as conn:
+        rows = conn.execute("SELECT key, value FROM sessions;").fetchall()
+    return {str(row["key"]): str(row["value"]) for row in rows}
+
+
 def get_runtime_overrides(db_path: Optional[Path] = None) -> dict[str, str]:
-    keys = (
-        "DAILY_PROPOSAL_CAP",
-        "FLOOR_HOURLY_RATE",
-        "FLOOR_FIXED_RATE",
-        "ALLOW_UPWORK_NETWORK",
-    )
+    keys = RUNTIME_SETTING_KEYS
     placeholders = ", ".join("?" for _ in keys)
     with get_connection(db_path) as conn:
         rows = conn.execute(
@@ -326,17 +340,35 @@ def get_runtime_overrides(db_path: Optional[Path] = None) -> dict[str, str]:
     return {str(row["key"]): str(row["value"]) for row in rows}
 
 
+def get_blacklist_keywords(db_path: Optional[Path] = None) -> list[str]:
+    raw_value = get_session_value("blacklist_keywords", db_path)
+    if raw_value is None:
+        set_session_value("blacklist_keywords", DEFAULT_SETTING_VALUES["blacklist_keywords"], db_path)
+        return list(DEFAULT_BLACKLIST_KEYWORDS)
+    try:
+        parsed = json.loads(raw_value)
+    except json.JSONDecodeError:
+        logger.warning("Invalid blacklist_keywords JSON; using defaults")
+        return list(DEFAULT_BLACKLIST_KEYWORDS)
+    if not isinstance(parsed, list):
+        return list(DEFAULT_BLACKLIST_KEYWORDS)
+    keywords = [str(item).strip().lower() for item in parsed if str(item).strip()]
+    return keywords or list(DEFAULT_BLACKLIST_KEYWORDS)
+
+
 __all__ = [
     "create_proposal",
     "count_submitted_today",
     "get_connection",
     "get_connects_spent_today",
+    "get_blacklist_keywords",
     "get_job",
     "get_job_by_upwork_id",
     "get_proposal",
     "get_runtime_overrides",
     "get_session_value",
     "init_db",
+    "list_session_values",
     "list_jobs_by_status",
     "list_proposals_by_status",
     "log_connects",

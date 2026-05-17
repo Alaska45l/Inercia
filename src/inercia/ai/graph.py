@@ -26,6 +26,7 @@ class PipelineState(TypedDict, total=False):
     raw_markdown: str
     fallback_title: str
     fallback_description: str
+    db_path: Optional[Path]
     job_detail: JobDetail
     roi_score: ROIScore
     cover_letter: CoverLetter
@@ -67,7 +68,7 @@ async def _extractor_node(state: PipelineState) -> PipelineState:
 
 
 async def _investor_node(state: PipelineState) -> PipelineState:
-    roi = score_job(state["job_detail"])
+    roi = score_job(state["job_detail"], db_path=state.get("db_path"))
     state["roi_score"] = roi
     state["status"] = "scored" if roi.passed else "blacklisted"
     return state
@@ -154,6 +155,7 @@ async def run_pipeline_for_markdown(
     upwork_id: Optional[str] = None,
     fallback_title: str = "",
     fallback_description: str = "",
+    db_path: Optional[Path] = None,
 ) -> PipelineState:
     graph = build_graph()
     initial_state: PipelineState = {
@@ -161,6 +163,7 @@ async def run_pipeline_for_markdown(
         "fallback_title": fallback_title,
         "fallback_description": fallback_description,
         "copywriter_attempts": 0,
+        "db_path": db_path,
     }
     if upwork_id is not None:
         initial_state["upwork_id"] = upwork_id
@@ -245,6 +248,7 @@ async def process_unprocessed_jobs(limit: int = 20, db_path: Optional[Path] = No
                 upwork_id=str(row["upwork_id"]),
                 fallback_title=str(row["title"]),
                 fallback_description=str(row["description"]),
+                db_path=db_path,
             )
             proposal_id = await _save_pipeline_result(row, state, db_path)
             processed += 1

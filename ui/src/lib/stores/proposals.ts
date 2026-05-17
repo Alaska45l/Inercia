@@ -44,7 +44,28 @@ export interface JobRow {
   scraped_at: string;
 }
 
+export interface UpworkSearchFilters {
+  categories: string[];
+  experience_levels: string[];
+  job_types: string[];
+  budget_min: number | null;
+  budget_max: number | null;
+  hourly_rate_min: number | null;
+  hourly_rate_max: number | null;
+  hours_per_week: string[];
+  project_lengths: string[];
+  client_history: string[];
+  client_location: string;
+  proposals: string[];
+  max_connects: number;
+}
+
 export interface SettingsState {
+  gemini_api_key: string;
+  opencode_api_key: string;
+  opencode_base_url: string;
+  opencode_copywriter_model: string;
+  opencode_user_agent: string;
   daily_proposal_cap: number;
   floor_hourly_rate: number;
   floor_fixed_rate: number;
@@ -54,6 +75,16 @@ export interface SettingsState {
   ws_port: number;
   has_gemini_key: boolean;
   has_opencode_key: boolean;
+  scheduler_interval_min_minutes: number;
+  scheduler_interval_max_minutes: number;
+  blacklist_keywords: string[];
+  upwork_search_filters: UpworkSearchFilters;
+  portfolio_attachments: string[];
+}
+
+export interface SchedulerStatus {
+  running: boolean;
+  next_run_in_seconds: number;
 }
 
 type ServerMessage =
@@ -71,6 +102,7 @@ type ServerMessage =
     }
   | { type: 'jobs_list'; data: { jobs: JobRow[] } }
   | { type: 'settings_state'; data: SettingsState }
+  | { type: 'scheduler_status'; data: SchedulerStatus }
   | { type: 'login_browser_opened' }
   | { type: 'login_browser_closed' }
   | { type: 'error'; data: { message: string } };
@@ -90,6 +122,7 @@ export const connectionState = writable<'connecting' | 'connected' | 'offline'>(
 export const lastError = writable<string>('');
 export const jobs = writable<JobRow[]>([]);
 export const settingsState = writable<SettingsState | null>(null);
+export const schedulerStatus = writable<SchedulerStatus>({ running: false, next_run_in_seconds: 0 });
 export const scrapeRunning = writable(false);
 export const processRunning = writable(false);
 export const loginBrowserOpen = writable(false);
@@ -109,21 +142,49 @@ export function updateProposal(id: number, patch: Partial<Proposal>): void {
   );
 }
 
-function upsertProposal(incoming: Proposal): void {
+function upsertProposal(incoming: Proposal): boolean {
+  let inserted = false;
   proposals.update((items) => {
     const index = items.findIndex((proposal) => proposal.proposal_id === incoming.proposal_id);
     if (index === -1) {
+      inserted = true;
       return [incoming, ...items];
     }
     const next = [...items];
     next[index] = { ...next[index], ...incoming };
     return next;
   });
+  return inserted;
+}
+
+function playNotificationSound(): void {
+  const audio = new Audio('/notification.wav');
+  audio.play().catch(() => undefined);
+}
+
+function notifyProposalReady(proposal: Proposal): void {
+  playNotificationSound();
+  if (!('Notification' in window)) return;
+  const show = () => {
+    new Notification('Inercia — New Proposal Ready', {
+      body: `${proposal.title} — ROI ${proposal.roi_score.toFixed(1)} — ${proposal.connects_cost} connects`
+    });
+  };
+  if (Notification.permission === 'granted') {
+    show();
+    return;
+  }
+  if (Notification.permission === 'default') {
+    Notification.requestPermission().then((permission) => {
+      if (permission === 'granted') show();
+    });
+  }
 }
 
 function handleMessage(message: ServerMessage): void {
   if (message.type === 'proposal_ready') {
-    upsertProposal(message.data);
+    const inserted = upsertProposal(message.data);
+    if (initialLoadComplete && inserted && message.data.status === 'pending') notifyProposalReady(message.data);
     return;
   }
   if (message.type === 'stats_update') {
@@ -181,6 +242,11 @@ function handleMessage(message: ServerMessage): void {
     settingsState.set(message.data);
     return;
   }
+  if (message.type === 'scheduler_status') {
+    schedulerStatus.set(message.data);
+    initialLoadComplete = true;
+    return;
+  }
   if (message.type === 'login_browser_opened') {
     loginBrowserOpen.set(true);
     return;
@@ -198,6 +264,7 @@ function handleMessage(message: ServerMessage): void {
 
 let socket: WebSocket | null = null;
 let reconnectTimer: number | null = null;
+let initialLoadComplete = false;
 
 export function connectProposalsSocket(url = 'ws://127.0.0.1:9741'): void {
   if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
@@ -208,6 +275,7 @@ export function connectProposalsSocket(url = 'ws://127.0.0.1:9741'): void {
   socket.addEventListener('open', () => {
     connectionState.set('connected');
     lastError.set('');
+    initialLoadComplete = false;
   });
   socket.addEventListener('message', (event) => {
     try {
@@ -255,6 +323,11 @@ export function runScrape(query: string, allowNetwork: boolean): void {
   sendMessage({ type: 'run_scrape', query, allow_network: allowNetwork });
 }
 
+export function runConfiguredScrape(): void {
+  scrapeRunning.set(true);
+  sendMessage({ type: 'run_scrape', query: '' });
+}
+
 export function runProcess(limit: number): void {
   processRunning.set(true);
   sendMessage({ type: 'run_process', limit });
@@ -278,6 +351,18 @@ export function requestSettings(): void {
 
 export function setSetting(key: string, value: string): void {
   sendMessage({ type: 'set_setting', key, value });
+}
+
+export function setJsonSetting(key: string, value: unknown): void {
+  setSetting(key, JSON.stringify(value));
+}
+
+export function startScheduler(): void {
+  sendMessage({ type: 'start_scheduler' });
+}
+
+export function stopScheduler(): void {
+  sendMessage({ type: 'stop_scheduler' });
 }
 
 export function updateConnectsTotal(total: number): void {

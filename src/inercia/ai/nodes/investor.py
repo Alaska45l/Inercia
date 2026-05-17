@@ -2,34 +2,19 @@ from __future__ import annotations
 
 import logging
 import re
+from pathlib import Path
+from typing import Optional
 
 from inercia.ai.schemas import JobDetail, ROIScore
+from inercia.config import DEFAULT_BLACKLIST_KEYWORDS
 from inercia.cv.profiles import get_upwork_profile
+from inercia.db.manager import get_blacklist_keywords
 
 logger = logging.getLogger("inercia.ai.nodes.investor")
 
 ROI_THRESHOLD: float = 6.0
 
-BLACKLIST_KEYWORDS: frozenset[str] = frozenset(
-    {
-        "wordpress",
-        "wix",
-        "shopify",
-        "squarespace",
-        "bigcommerce",
-        "elementor",
-        "divi",
-        "webflow",
-        "woocommerce",
-        "magento",
-        "prestashop",
-        "joomla",
-        "drupal",
-        "php developer",
-        "theme customization",
-        "plugin development",
-    }
-)
+BLACKLIST_KEYWORDS: frozenset[str] = frozenset(DEFAULT_BLACKLIST_KEYWORDS)
 
 
 def _normalize_skill(value: str) -> str:
@@ -46,13 +31,14 @@ def _job_skills(job_detail: JobDetail) -> set[str]:
     return {skill for skill in explicit.union(title_words) if skill}
 
 
-def _contains_blacklist(job_detail: JobDetail) -> bool:
+def _contains_blacklist(job_detail: JobDetail, db_path: Optional[Path] = None) -> bool:
     title = job_detail.title.lower()
     description = job_detail.description.lower()
-    return any(keyword in title or keyword in description for keyword in BLACKLIST_KEYWORDS)
+    keywords = get_blacklist_keywords(db_path)
+    return any(keyword in title or keyword in description for keyword in keywords)
 
 
-def score_job(job_detail: JobDetail) -> ROIScore:
+def score_job(job_detail: JobDetail, db_path: Optional[Path] = None) -> ROIScore:
     my_skills = _profile_skills()
     job_skills = _job_skills(job_detail)
     union = job_skills.union(my_skills)
@@ -66,7 +52,7 @@ def score_job(job_detail: JobDetail) -> ROIScore:
     roi += 10 * job_detail.client_hire_rate
     roi += 10 * min(job_detail.client_reviews / 20, 1.0)
 
-    blacklisted = _contains_blacklist(job_detail)
+    blacklisted = _contains_blacklist(job_detail, db_path)
     if blacklisted:
         roi = -100
         reasons.append("blacklist_keyword")

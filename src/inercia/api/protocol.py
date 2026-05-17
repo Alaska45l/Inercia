@@ -99,6 +99,14 @@ class SetConnectsTotal(TypedDict):
     total: int
 
 
+class StartScheduler(TypedDict):
+    type: Literal["start_scheduler"]
+
+
+class StopScheduler(TypedDict):
+    type: Literal["stop_scheduler"]
+
+
 class ScrapeProgressData(TypedDict):
     phase: str
     queued: int
@@ -139,7 +147,28 @@ class JobRow(TypedDict):
     scraped_at: str
 
 
+class UpworkSearchFiltersData(TypedDict):
+    categories: list[str]
+    experience_levels: list[str]
+    job_types: list[str]
+    budget_min: Optional[float]
+    budget_max: Optional[float]
+    hourly_rate_min: Optional[float]
+    hourly_rate_max: Optional[float]
+    hours_per_week: list[str]
+    project_lengths: list[str]
+    client_history: list[str]
+    client_location: str
+    proposals: list[str]
+    max_connects: int
+
+
 class SettingsData(TypedDict):
+    gemini_api_key: str
+    opencode_api_key: str
+    opencode_base_url: str
+    opencode_copywriter_model: str
+    opencode_user_agent: str
     daily_proposal_cap: int
     floor_hourly_rate: float
     floor_fixed_rate: float
@@ -149,6 +178,16 @@ class SettingsData(TypedDict):
     ws_port: int
     has_gemini_key: bool
     has_opencode_key: bool
+    scheduler_interval_min_minutes: int
+    scheduler_interval_max_minutes: int
+    blacklist_keywords: list[str]
+    upwork_search_filters: UpworkSearchFiltersData
+    portfolio_attachments: list[str]
+
+
+class SchedulerStatusData(TypedDict):
+    running: bool
+    next_run_in_seconds: int
 
 
 def proposal_ready(data: ProposalReadyData) -> ProposalReady:
@@ -194,6 +233,10 @@ def settings_state(data: SettingsData) -> dict[str, Any]:
     return {"type": "settings_state", "data": data}
 
 
+def scheduler_status(data: SchedulerStatusData) -> dict[str, Any]:
+    return {"type": "scheduler_status", "data": data}
+
+
 def login_browser_opened() -> dict[str, Any]:
     return {"type": "login_browser_opened"}
 
@@ -220,9 +263,13 @@ __all__ = [
     "ScrapeProgressData",
     "SetConnectsTotal",
     "SetSetting",
+    "StartScheduler",
+    "StopScheduler",
+    "SchedulerStatusData",
     "SettingsData",
     "StatsData",
     "StatsUpdate",
+    "UpworkSearchFiltersData",
     "UserApproved",
     "UserRejected",
     "connects_balance",
@@ -235,6 +282,7 @@ __all__ = [
     "process_progress",
     "scrape_done",
     "scrape_progress",
+    "scheduler_status",
     "settings_state",
     "stats_update",
 ]

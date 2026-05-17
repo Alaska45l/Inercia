@@ -241,8 +241,11 @@ def login_browser_opened() -> dict[str, Any]:
     return {"type": "login_browser_opened"}
 
 
-def login_browser_closed() -> dict[str, Any]:
-    return {"type": "login_browser_closed"}
+def login_browser_closed(authenticated: bool = False, message: str = "") -> dict[str, Any]:
+    return {
+        "type": "login_browser_closed",
+        "data": {"authenticated": authenticated, "message": message},
+    }
 
 
 __all__ = [

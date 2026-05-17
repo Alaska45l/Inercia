@@ -87,6 +87,11 @@ export interface SchedulerStatus {
   next_run_in_seconds: number;
 }
 
+export interface LoginStatus {
+  state: 'unknown' | 'browser_open' | 'confirmed' | 'failed';
+  message: string;
+}
+
 type ServerMessage =
   | { type: 'proposal_ready'; data: Proposal }
   | { type: 'stats_update'; data: Stats }
@@ -104,7 +109,7 @@ type ServerMessage =
   | { type: 'settings_state'; data: SettingsState }
   | { type: 'scheduler_status'; data: SchedulerStatus }
   | { type: 'login_browser_opened' }
-  | { type: 'login_browser_closed' }
+  | { type: 'login_browser_closed'; data?: { authenticated: boolean; message: string } }
   | { type: 'error'; data: { message: string } };
 
 export const proposals = writable<Proposal[]>([]);
@@ -126,6 +131,7 @@ export const schedulerStatus = writable<SchedulerStatus>({ running: false, next_
 export const scrapeRunning = writable(false);
 export const processRunning = writable(false);
 export const loginBrowserOpen = writable(false);
+export const loginStatus = writable<LoginStatus>({ state: 'unknown', message: 'Not checked' });
 export const lastScrapeResult = writable<string>('');
 export const lastProcessResult = writable<string>('');
 
@@ -249,10 +255,15 @@ function handleMessage(message: ServerMessage): void {
   }
   if (message.type === 'login_browser_opened') {
     loginBrowserOpen.set(true);
+    loginStatus.set({ state: 'browser_open', message: 'Browser open - log in, then confirm' });
     return;
   }
   if (message.type === 'login_browser_closed') {
     loginBrowserOpen.set(false);
+    loginStatus.set({
+      state: message.data?.authenticated ? 'confirmed' : 'failed',
+      message: message.data?.message || 'Upwork login was not confirmed'
+    });
     return;
   }
   if (message.type === 'error') {

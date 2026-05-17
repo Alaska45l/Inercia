@@ -174,6 +174,33 @@ async def _terminate_login_browser(profile_dir: Path) -> None:
             pass
 
 
+async def _check_upwork_authenticated(profile_dir: Path) -> tuple[bool, str]:
+    from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+
+    from inercia.applicator.session import persistent_upwork_session
+    from inercia.scraper.engine import NAV_TIMEOUT_MS, block_heavy_resources
+    from inercia.scraper.selectors import UPWORK_FIND_WORK_URL, UPWORK_SEARCH_RESULTS_READY
+
+    try:
+        async with persistent_upwork_session(user_data_dir=profile_dir, headless=True) as context:
+            page = await context.new_page()
+            await block_heavy_resources(page)
+            response = await page.goto(UPWORK_FIND_WORK_URL, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
+            current_url = page.url.lower()
+            if response is not None and response.status >= 400:
+                return False, f"Upwork returned HTTP {response.status}"
+            if "login" in current_url or "account-security" in current_url:
+                return False, "Upwork redirected to login"
+            try:
+                await page.wait_for_selector(UPWORK_SEARCH_RESULTS_READY, timeout=8_000)
+            except PlaywrightTimeoutError:
+                pass
+            return True, "Upwork session confirmed"
+    except Exception as exc:
+        logger.warning("Upwork login verification failed: %s", exc)
+        return False, f"Could not verify Upwork login: {exc}"
+
+
 def _row_to_proposal_ready(row: sqlite3.Row) -> ProposalReadyData:
     return {
         "proposal_id": int(row["proposal_id"]),
@@ -411,7 +438,8 @@ async def _handle_close_upwork_login(payload: dict[str, Any], websocket: Any, db
     if not _login_browser_pids(profile_dir):
         _login_process = None
         _login_profile_dir = None
-        return error_message("No login browser open")
+        authenticated, message = await _check_upwork_authenticated(profile_dir)
+        return login_browser_closed(authenticated=authenticated, message=message)
     await _terminate_login_browser(profile_dir)
     if _login_process is not None and _login_process.poll() is None:
         try:
@@ -422,7 +450,8 @@ async def _handle_close_upwork_login(payload: dict[str, Any], websocket: Any, db
             await asyncio.to_thread(_login_process.wait)
     _login_process = None
     _login_profile_dir = None
-    return login_browser_closed()
+    authenticated, message = await _check_upwork_authenticated(profile_dir)
+    return login_browser_closed(authenticated=authenticated, message=message)
 
 
 def _list_all_jobs(limit: int, db_path: Optional[Path]) -> list[sqlite3.Row]:

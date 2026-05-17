@@ -866,6 +866,14 @@ select.control-input {
   line-height: 1.5;
 }
 
+.login-panel .login-ok {
+  color: var(--ok);
+}
+
+.login-panel .login-err {
+  color: var(--err);
+}
+
 .login-state {
   display: inline-flex;
   align-items: center;

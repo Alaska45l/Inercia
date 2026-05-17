@@ -78,6 +78,18 @@ class CloseUpworkLogin(TypedDict):
     type: Literal["close_upwork_login"]
 
 
+class LoginStatusData(TypedDict):
+    browser_open: bool
+    authenticated: bool
+    message: str
+    current_url: str
+
+
+class LoginStatus(TypedDict):
+    type: Literal["login_status"]
+    data: LoginStatusData
+
+
 class GetJobs(TypedDict):
     type: Literal["get_jobs"]
     status: Optional[str]
@@ -248,6 +260,10 @@ def login_browser_closed(authenticated: bool = False, message: str = "") -> dict
     }
 
 
+def login_status(data: LoginStatusData) -> LoginStatus:
+    return {"type": "login_status", "data": data}
+
+
 __all__ = [
     "CloseUpworkLogin",
     "ConnectsBalance",
@@ -255,6 +271,8 @@ __all__ = [
     "GetJobs",
     "GetSettings",
     "JobRow",
+    "LoginStatus",
+    "LoginStatusData",
     "OpenUpworkLogin",
     "ProcessDoneData",
     "ProcessProgressData",
@@ -280,6 +298,7 @@ __all__ = [
     "jobs_list",
     "login_browser_closed",
     "login_browser_opened",
+    "login_status",
     "proposal_ready",
     "process_done",
     "process_progress",

@@ -110,6 +110,7 @@ type ServerMessage =
   | { type: 'scheduler_status'; data: SchedulerStatus }
   | { type: 'login_browser_opened' }
   | { type: 'login_browser_closed'; data?: { authenticated: boolean; message: string } }
+  | { type: 'login_status'; data: { browser_open: boolean; authenticated: boolean; message: string; current_url: string } }
   | { type: 'error'; data: { message: string } };
 
 export const proposals = writable<Proposal[]>([]);
@@ -263,6 +264,14 @@ function handleMessage(message: ServerMessage): void {
     loginStatus.set({
       state: message.data?.authenticated ? 'confirmed' : 'failed',
       message: message.data?.message || 'Upwork login was not confirmed'
+    });
+    return;
+  }
+  if (message.type === 'login_status') {
+    loginBrowserOpen.set(message.data.browser_open);
+    loginStatus.set({
+      state: message.data.authenticated ? 'confirmed' : message.data.browser_open ? 'browser_open' : 'unknown',
+      message: message.data.message
     });
     return;
   }

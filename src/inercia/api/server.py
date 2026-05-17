@@ -9,6 +9,8 @@ import sqlite3
 import shutil
 import subprocess
 import time
+import urllib.error
+import urllib.request
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Optional
@@ -20,6 +22,7 @@ from inercia.api.protocol import (
     jobs_list,
     login_browser_closed,
     login_browser_opened,
+    login_status,
     proposal_ready,
     process_done,
     process_progress,
@@ -49,6 +52,7 @@ logger = logging.getLogger("inercia.api.server")
 DEFAULT_CONNECTS_TOTAL: int = 211
 POLL_INTERVAL_S: float = 2.0
 SESSION_KEY_CONNECTS_TOTAL: str = "connects_total"
+LOGIN_DEBUG_PORT: int = 9742
 _login_process: Optional[subprocess.Popen[Any]] = None
 _login_profile_dir: Optional[Path] = None
 _scheduler_task: Optional[asyncio.Task[None]] = None
@@ -128,6 +132,56 @@ def _login_browser_pids(profile_dir: Path) -> list[int]:
         if needle in cmdline:
             pids.append(int(proc_dir.name))
     return pids
+
+
+def _login_debug_pages() -> list[dict[str, Any]]:
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{LOGIN_DEBUG_PORT}/json",
+        headers={"Accept": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=1.5) as response:
+            parsed = json.loads(response.read().decode("utf-8", errors="replace"))
+    except (OSError, urllib.error.URLError, json.JSONDecodeError):
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return [item for item in parsed if isinstance(item, dict)]
+
+
+def _login_status_from_debug(profile_dir: Path) -> dict[str, Any]:
+    browser_open = bool(_login_browser_pids(profile_dir))
+    current_url = ""
+    authenticated = False
+    message = "Browser open - log in, then confirm" if browser_open else "Login browser closed"
+    for page in _login_debug_pages():
+        url = str(page.get("url", ""))
+        if not url or url.startswith("devtools://"):
+            continue
+        current_url = url
+        lowered = url.lower()
+        if "upwork.com/nx/find-work" in lowered:
+            authenticated = True
+            message = "Upwork login confirmed - click Confirm Login to close"
+            break
+        if "upwork.com" in lowered and "login" not in lowered and "account-security" not in lowered:
+            authenticated = True
+            message = "Upwork session appears authenticated - click Confirm Login to close"
+            break
+        if "login" in lowered or "account-security" in lowered:
+            message = "Waiting for Upwork login"
+    return {
+        "browser_open": browser_open,
+        "authenticated": authenticated,
+        "message": message,
+        "current_url": current_url,
+    }
+
+
+def _login_status_payload(db_path: Optional[Path]) -> dict[str, Any]:
+    settings = get_settings(db_path=db_path)
+    profile_dir = _login_profile_dir or settings.upwork_session_dir
+    return _login_status_from_debug(profile_dir)
 
 
 def _scheduler_status_payload() -> dict[str, Any]:
@@ -302,6 +356,7 @@ async def _send_initial_state(websocket: Any, db_path: Optional[Path]) -> None:
     for proposal in ready:
         await _send_json(websocket, proposal_ready(proposal))
     await _send_json(websocket, scheduler_status(_scheduler_status_payload()))
+    await _send_json(websocket, login_status(_login_status_payload(db_path)))
 
 
 async def _handle_user_approved(proposal_id: int, db_path: Optional[Path]) -> dict[str, Any]:
@@ -419,6 +474,8 @@ async def _handle_open_upwork_login(payload: dict[str, Any], websocket: Any, db_
         [
             browser_bin,
             f"--user-data-dir={profile_dir}",
+            f"--remote-debugging-port={LOGIN_DEBUG_PORT}",
+            "--remote-debugging-address=127.0.0.1",
             "--new-window",
             "https://www.upwork.com/ab/account-security/login",
         ],
@@ -597,6 +654,7 @@ async def _poll_ready(websocket: Any, db_path: Optional[Path]) -> None:
                 sent.add(proposal_id)
         await _send_json(websocket, await asyncio.to_thread(build_stats, db_path))
         await _send_json(websocket, scheduler_status(_scheduler_status_payload()))
+        await _send_json(websocket, login_status(_login_status_payload(db_path)))
         await asyncio.sleep(POLL_INTERVAL_S)
 
 

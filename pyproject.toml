@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "inercia"
+version = "1.0.0"
+description = "Autonomous Upwork proposal pipeline with human approval."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "google-genai>=1.0.0",
+    "langgraph>=0.2.0",
+    "playwright>=1.49.0",
+    "pydantic>=2.10.0",
+    "websockets>=14.0",
+]
+
+[project.scripts]
+inercia = "inercia.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+inercia = ["db/schema.sql", "cv/templates/*.typ"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]

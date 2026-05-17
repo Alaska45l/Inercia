@@ -530,6 +530,10 @@ select.control-input {
   border-color: var(--ok);
 }
 
+.control-button.login-cancel {
+  border-color: var(--err);
+}
+
 .toggle-row {
   display: inline-flex;
   align-items: center;
@@ -586,6 +590,10 @@ select.control-input {
 .running-pulse {
   color: var(--warn);
   animation: opacity-pulse 800ms ease-in-out infinite;
+}
+
+.scrape-error {
+  color: var(--err);
 }
 
 .job-filter-row {
@@ -856,6 +864,13 @@ select.control-input {
   max-width: 360px;
   margin: 0 auto;
   text-align: center;
+}
+
+.login-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
 }
 
 .login-panel p,

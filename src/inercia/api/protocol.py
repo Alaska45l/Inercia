@@ -78,6 +78,10 @@ class CloseUpworkLogin(TypedDict):
     type: Literal["close_upwork_login"]
 
 
+class CheckUpworkSession(TypedDict):
+    type: Literal["check_upwork_session"]
+
+
 class LoginStatusData(TypedDict):
     browser_open: bool
     authenticated: bool
@@ -132,6 +136,12 @@ class ScrapeDoneData(TypedDict):
     processed: int
     inserted: int
     failed: int
+
+
+class ScrapeErrorData(TypedDict):
+    message: str
+    query: str
+    source: str
 
 
 class ProcessProgressData(TypedDict):
@@ -229,6 +239,10 @@ def scrape_done(data: ScrapeDoneData) -> dict[str, Any]:
     return {"type": "scrape_done", "data": data}
 
 
+def scrape_error(data: ScrapeErrorData) -> dict[str, Any]:
+    return {"type": "scrape_error", "data": data}
+
+
 def process_progress(data: ProcessProgressData) -> dict[str, Any]:
     return {"type": "process_progress", "data": data}
 
@@ -266,6 +280,7 @@ def login_status(data: LoginStatusData) -> LoginStatus:
 
 __all__ = [
     "CloseUpworkLogin",
+    "CheckUpworkSession",
     "ConnectsBalance",
     "ConnectsBalanceData",
     "GetJobs",
@@ -281,6 +296,7 @@ __all__ = [
     "RunProcess",
     "RunScrape",
     "ScrapeDoneData",
+    "ScrapeErrorData",
     "ScrapeProgressData",
     "SetConnectsTotal",
     "SetSetting",
@@ -303,6 +319,7 @@ __all__ = [
     "process_done",
     "process_progress",
     "scrape_done",
+    "scrape_error",
     "scrape_progress",
     "scheduler_status",
     "settings_state",

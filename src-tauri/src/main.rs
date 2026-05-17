@@ -102,7 +102,7 @@ fn spawn_python_api(app: &AppHandle, state: &PythonSidecar) -> Result<(), String
         .arg("api")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stderr(Stdio::inherit());
     let child = command
         .spawn()
         .map_err(|error| format!("failed to spawn Python API: {error}"))?;

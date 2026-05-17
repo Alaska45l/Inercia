@@ -13,6 +13,7 @@ from inercia.core.orchestrator import scrape_query
 logger = logging.getLogger("inercia.core.scheduler")
 
 SchedulerStatusCallback = Callable[[int], Awaitable[None]]
+SchedulerErrorCallback = Callable[[str], Awaitable[None]]
 
 
 async def run_periodic_scan(
@@ -40,12 +41,25 @@ async def run_scheduler_loop(
     db_path: Optional[Path] = None,
     stop_event: Optional[asyncio.Event] = None,
     status_callback: Optional[SchedulerStatusCallback] = None,
+    error_callback: Optional[SchedulerErrorCallback] = None,
 ) -> None:
     while stop_event is None or not stop_event.is_set():
         settings = get_settings(db_path=db_path)
-        await scrape_query(query="", db_path=db_path, allow_network=settings.allow_upwork_network)
-        summary = await process_unprocessed_jobs(limit=20, db_path=db_path)
-        logger.info("Scheduler cycle completed | summary=%s", summary)
+        try:
+            await scrape_query(query="", db_path=db_path, allow_network=settings.allow_upwork_network)
+            summary = await process_unprocessed_jobs(limit=20, db_path=db_path)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            message = f"Scheduler cycle failed: {exc}"
+            logger.exception("Scheduler cycle failed: %s", exc)
+            if error_callback is not None:
+                try:
+                    await error_callback(message)
+                except Exception:
+                    logger.exception("Scheduler error callback failed")
+        else:
+            logger.info("Scheduler cycle completed | summary=%s", summary)
 
         min_seconds = max(settings.scheduler_interval_min_minutes, 1) * 60
         max_seconds = max(settings.scheduler_interval_max_minutes, settings.scheduler_interval_min_minutes) * 60
@@ -61,4 +75,4 @@ async def run_scheduler_loop(
             continue
 
 
-__all__ = ["SchedulerStatusCallback", "run_periodic_scan", "run_scheduler_loop"]
+__all__ = ["SchedulerErrorCallback", "SchedulerStatusCallback", "run_periodic_scan", "run_scheduler_loop"]

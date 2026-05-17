@@ -100,6 +100,7 @@ type ServerMessage =
   | { type: 'user_rejected_ack'; data: { proposal_id: number } }
   | { type: 'scrape_progress'; data: { phase: string; queued: number; processed: number; failed: number } }
   | { type: 'scrape_done'; data: { query: string; queued: number; processed: number; inserted: number; failed: number } }
+  | { type: 'scrape_error'; data: { message: string; query: string; source: string } }
   | { type: 'process_progress'; data: { processed: number; ready: number; blacklisted: number; failed: number } }
   | {
       type: 'process_done';
@@ -134,6 +135,7 @@ export const processRunning = writable(false);
 export const loginBrowserOpen = writable(false);
 export const loginStatus = writable<LoginStatus>({ state: 'unknown', message: 'Not checked' });
 export const lastScrapeResult = writable<string>('');
+export const lastScrapeError = writable<string>('');
 export const lastProcessResult = writable<string>('');
 
 export const filteredProposals = derived([proposals, filterMode], ([$proposals, $filterMode]) => {
@@ -188,6 +190,33 @@ function notifyProposalReady(proposal: Proposal): void {
   }
 }
 
+const SCRAPE_TIMEOUT_MS = 120_000;
+let scrapeTimeoutTimer: number | null = null;
+
+function clearScrapeTimeout(): void {
+  if (scrapeTimeoutTimer !== null) {
+    window.clearTimeout(scrapeTimeoutTimer);
+    scrapeTimeoutTimer = null;
+  }
+}
+
+function startScrapeTimeout(): void {
+  clearScrapeTimeout();
+  scrapeTimeoutTimer = window.setTimeout(() => {
+    const message = 'Scrape timed out after 120 seconds without a completion message';
+    scrapeRunning.set(false);
+    lastScrapeError.set(message);
+    lastError.set(message);
+    scrapeTimeoutTimer = null;
+  }, SCRAPE_TIMEOUT_MS);
+}
+
+function beginScrapeRun(): void {
+  scrapeRunning.set(true);
+  lastScrapeError.set('');
+  startScrapeTimeout();
+}
+
 function handleMessage(message: ServerMessage): void {
   if (message.type === 'proposal_ready') {
     const inserted = upsertProposal(message.data);
@@ -217,14 +246,25 @@ function handleMessage(message: ServerMessage): void {
   }
   if (message.type === 'scrape_progress') {
     scrapeRunning.set(true);
+    lastScrapeError.set('');
+    startScrapeTimeout();
     lastScrapeResult.set(`${message.data.phase} · queued ${message.data.queued} · processed ${message.data.processed}`);
     return;
   }
   if (message.type === 'scrape_done') {
     scrapeRunning.set(false);
+    clearScrapeTimeout();
+    if (message.data.failed === 0) lastScrapeError.set('');
     lastScrapeResult.set(
       `${message.data.query} · queued ${message.data.queued} · processed ${message.data.processed} · inserted ${message.data.inserted} · failed ${message.data.failed}`
     );
+    return;
+  }
+  if (message.type === 'scrape_error') {
+    scrapeRunning.set(false);
+    clearScrapeTimeout();
+    lastScrapeError.set(message.data.message);
+    lastError.set(message.data.message);
     return;
   }
   if (message.type === 'process_progress') {
@@ -256,28 +296,30 @@ function handleMessage(message: ServerMessage): void {
   }
   if (message.type === 'login_browser_opened') {
     loginBrowserOpen.set(true);
-    loginStatus.set({ state: 'browser_open', message: 'Browser open - log in, then confirm' });
+    loginStatus.set({ state: 'browser_open', message: 'Waiting for login...' });
     return;
   }
   if (message.type === 'login_browser_closed') {
     loginBrowserOpen.set(false);
     loginStatus.set({
       state: message.data?.authenticated ? 'confirmed' : 'failed',
-      message: message.data?.message || 'Upwork login was not confirmed'
+      message: message.data?.message ?? 'Upwork login was not confirmed'
     });
     return;
   }
   if (message.type === 'login_status') {
     loginBrowserOpen.set(message.data.browser_open);
     loginStatus.set({
-      state: message.data.authenticated ? 'confirmed' : message.data.browser_open ? 'browser_open' : 'unknown',
+      state: message.data.authenticated ? 'confirmed' : message.data.browser_open ? 'browser_open' : 'failed',
       message: message.data.message
     });
     return;
   }
   if (message.type === 'error') {
     lastError.set(message.data.message);
+    if (get(scrapeRunning)) lastScrapeError.set(message.data.message);
     scrapeRunning.set(false);
+    clearScrapeTimeout();
     processRunning.set(false);
   }
 }
@@ -306,6 +348,8 @@ export function connectProposalsSocket(url = 'ws://127.0.0.1:9741'): void {
   });
   socket.addEventListener('close', () => {
     connectionState.set('offline');
+    scrapeRunning.set(false);
+    clearScrapeTimeout();
     if (reconnectTimer !== null) {
       window.clearTimeout(reconnectTimer);
     }
@@ -316,12 +360,13 @@ export function connectProposalsSocket(url = 'ws://127.0.0.1:9741'): void {
   });
 }
 
-function sendMessage(payload: object): void {
+function sendMessage(payload: object): boolean {
   if (!socket || socket.readyState !== WebSocket.OPEN) {
     lastError.set('WebSocket is not connected');
-    return;
+    return false;
   }
   socket.send(JSON.stringify(payload));
+  return true;
 }
 
 export function approveProposal(proposalId: number): void {
@@ -339,13 +384,19 @@ export function saveEditedLetter(proposalId: number, coverLetter: string): void 
 }
 
 export function runScrape(query: string, allowNetwork: boolean): void {
-  scrapeRunning.set(true);
-  sendMessage({ type: 'run_scrape', query, allow_network: allowNetwork });
+  beginScrapeRun();
+  if (!sendMessage({ type: 'run_scrape', query, allow_network: allowNetwork })) {
+    scrapeRunning.set(false);
+    clearScrapeTimeout();
+  }
 }
 
 export function runConfiguredScrape(): void {
-  scrapeRunning.set(true);
-  sendMessage({ type: 'run_scrape', query: '' });
+  beginScrapeRun();
+  if (!sendMessage({ type: 'run_scrape', query: '', allow_network: get(settingsState)?.allow_upwork_network ?? false })) {
+    scrapeRunning.set(false);
+    clearScrapeTimeout();
+  }
 }
 
 export function runProcess(limit: number): void {
@@ -359,6 +410,11 @@ export function openUpworkLogin(): void {
 
 export function closeUpworkLogin(): void {
   sendMessage({ type: 'close_upwork_login' });
+}
+
+export function checkUpworkSession(): void {
+  loginStatus.set({ state: 'unknown', message: 'Checking stored session...' });
+  sendMessage({ type: 'check_upwork_session' });
 }
 
 export function requestJobs(status: string | null = null, limit = 100): void {

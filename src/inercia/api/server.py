@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import asdict
 from pathlib import Path
@@ -27,6 +28,7 @@ from inercia.api.protocol import (
     process_done,
     process_progress,
     scrape_done,
+    scrape_error,
     scrape_progress,
     scheduler_status,
     settings_state,
@@ -51,13 +53,55 @@ logger = logging.getLogger("inercia.api.server")
 
 DEFAULT_CONNECTS_TOTAL: int = 211
 POLL_INTERVAL_S: float = 2.0
+LOGIN_STATUS_POLL_INTERVAL_S: float = 2.0
+LOGIN_AUTH_GRACE_S: float = 5.0
+LOGIN_AUTH_STABILITY_S: float = LOGIN_STATUS_POLL_INTERVAL_S * 2
+LOGIN_PROFILE_FLUSH_GRACE_S: float = 1.5
 SESSION_KEY_CONNECTS_TOTAL: str = "connects_total"
 LOGIN_DEBUG_PORT: int = 9742
+UPWORK_AUTHENTICATED_URL_PATTERNS: tuple[str, ...] = (
+    "upwork.com/nx/find-work",
+    "upwork.com/ab/find-work",
+    "upwork.com/nx/search",
+    "upwork.com/freelancer/dashboard",
+    "upwork.com/ab/jobs/search",
+    "upwork.com/nx/jobs",
+    "upwork.com/ab/proposals",
+    "upwork.com/nx/proposals",
+    "upwork.com/messages",
+    "upwork.com/freelancers/settings",
+)
+UPWORK_IN_PROGRESS_URL_FRAGMENTS: tuple[str, ...] = (
+    "account-security",
+    "login",
+    "signup",
+    "create-profile",
+    "complete-profile",
+    "google/callback",
+    "apple/callback",
+    "/oauth",
+    "/sso/",
+    "accounts.google.com",
+    "appleid.apple.com",
+)
+UPWORK_SESSION_COOKIE_NAMES: frozenset[str] = frozenset(
+    {
+        "oauth2_global_js_token",
+        "XSRF-TOKEN",
+        "visitor_id",
+    }
+)
 _login_process: Optional[subprocess.Popen[Any]] = None
 _login_profile_dir: Optional[Path] = None
+_login_poll_task: Optional[asyncio.Task[None]] = None
+_login_auth_confirmed_at: float = 0.0
+_login_auth_confirmed_url: str = ""
 _scheduler_task: Optional[asyncio.Task[None]] = None
 _scheduler_stop_event: Optional[asyncio.Event] = None
 _scheduler_next_run_at: float = 0.0
+_scheduler_error_seq: int = 0
+_scheduler_last_error: Optional[str] = None
+_background_tasks: set[asyncio.Task[None]] = set()
 
 
 def _get_connects_total(db_path: Optional[Path] = None) -> int:
@@ -153,23 +197,20 @@ def _login_status_from_debug(profile_dir: Path) -> dict[str, Any]:
     browser_open = bool(_login_browser_pids(profile_dir))
     current_url = ""
     authenticated = False
-    message = "Browser open - log in, then confirm" if browser_open else "Login browser closed"
+    message = "Waiting for login..." if browser_open else "Login browser closed"
     for page in _login_debug_pages():
         url = str(page.get("url", ""))
         if not url or url.startswith("devtools://"):
             continue
         current_url = url
         lowered = url.lower()
-        if "upwork.com/nx/find-work" in lowered:
+        if any(fragment in lowered for fragment in UPWORK_IN_PROGRESS_URL_FRAGMENTS):
+            message = "Waiting for login..."
+            continue
+        if any(pattern in lowered for pattern in UPWORK_AUTHENTICATED_URL_PATTERNS):
             authenticated = True
-            message = "Upwork login confirmed - click Confirm Login to close"
+            message = "Login detected. Confirming session..."
             break
-        if "upwork.com" in lowered and "login" not in lowered and "account-security" not in lowered:
-            authenticated = True
-            message = "Upwork session appears authenticated - click Confirm Login to close"
-            break
-        if "login" in lowered or "account-security" in lowered:
-            message = "Waiting for Upwork login"
     return {
         "browser_open": browser_open,
         "authenticated": authenticated,
@@ -178,9 +219,64 @@ def _login_status_from_debug(profile_dir: Path) -> dict[str, Any]:
     }
 
 
+def _chrome_cookie_now() -> int:
+    return int((time.time() + 11_644_473_600) * 1_000_000)
+
+
+def _upwork_cookie_session_status(profile_dir: Path) -> tuple[bool, str]:
+    cookies_path = profile_dir / "Default" / "Cookies"
+    if not cookies_path.exists():
+        return False, "No stored Upwork session cookies found"
+    quoted_path = urllib.parse.quote(str(cookies_path), safe="/:")
+    cookie_names = tuple(UPWORK_SESSION_COOKIE_NAMES)
+    placeholders = ", ".join("?" for _ in cookie_names)
+    sql = f"""
+        SELECT
+          COUNT(*) AS upwork_count,
+          SUM(
+            CASE
+              WHEN name IN ({placeholders})
+                OR lower(name) LIKE '%oauth%'
+                OR lower(name) LIKE '%token%'
+                OR lower(name) LIKE '%session%'
+              THEN 1
+              ELSE 0
+            END
+          ) AS session_count
+        FROM cookies
+        WHERE (host_key = ? OR host_key LIKE ?)
+          AND (expires_utc = 0 OR expires_utc > ?)
+    """
+    try:
+        with sqlite3.connect(f"file:{quoted_path}?mode=ro", uri=True, timeout=1.0) as conn:
+            row = conn.execute(sql, (*cookie_names, "upwork.com", "%.upwork.com", _chrome_cookie_now())).fetchone()
+    except sqlite3.Error as exc:
+        logger.warning("Could not read Upwork cookie store: %s", exc)
+        return False, "Could not read stored Upwork session cookies"
+    upwork_count = int(row[0]) if row is not None and row[0] is not None else 0
+    session_count = int(row[1]) if row is not None and row[1] is not None else 0
+    if session_count > 0:
+        return True, "Stored Upwork session cookies found"
+    if upwork_count > 0:
+        return True, "Stored Upwork cookies found"
+    return False, "No stored Upwork session cookies found"
+
+
+def _cookie_login_status_payload(profile_dir: Path) -> dict[str, Any]:
+    authenticated, message = _upwork_cookie_session_status(profile_dir)
+    return {
+        "browser_open": False,
+        "authenticated": authenticated,
+        "message": message,
+        "current_url": "",
+    }
+
+
 def _login_status_payload(db_path: Optional[Path]) -> dict[str, Any]:
     settings = get_settings(db_path=db_path)
     profile_dir = _login_profile_dir or settings.upwork_session_dir
+    if not _login_browser_pids(profile_dir):
+        return _cookie_login_status_payload(settings.upwork_session_dir)
     return _login_status_from_debug(profile_dir)
 
 
@@ -197,6 +293,12 @@ async def _scheduler_status_callback(wait_seconds: int) -> None:
     _scheduler_next_run_at = time.monotonic() + wait_seconds
 
 
+async def _scheduler_error_callback(message: str) -> None:
+    global _scheduler_error_seq, _scheduler_last_error
+    _scheduler_error_seq += 1
+    _scheduler_last_error = message
+
+
 async def _run_scheduler(db_path: Optional[Path], stop_event: asyncio.Event) -> None:
     from inercia.core.scheduler import run_scheduler_loop
 
@@ -207,6 +309,7 @@ async def _run_scheduler(db_path: Optional[Path], stop_event: asyncio.Event) -> 
             db_path=db_path,
             stop_event=stop_event,
             status_callback=_scheduler_status_callback,
+            error_callback=_scheduler_error_callback,
         )
     finally:
         _scheduler_next_run_at = 0.0
@@ -228,31 +331,117 @@ async def _terminate_login_browser(profile_dir: Path) -> None:
             pass
 
 
-async def _check_upwork_authenticated(profile_dir: Path) -> tuple[bool, str]:
-    from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+async def _close_login_browser_process(profile_dir: Path) -> None:
+    global _login_process, _login_profile_dir
+    await _terminate_login_browser(profile_dir)
+    if _login_process is not None and _login_process.poll() is None:
+        try:
+            _login_process.terminate()
+            await asyncio.to_thread(_login_process.wait, 5)
+        except subprocess.TimeoutExpired:
+            _login_process.kill()
+            await asyncio.to_thread(_login_process.wait)
+    await asyncio.sleep(LOGIN_PROFILE_FLUSH_GRACE_S)
+    _login_process = None
+    _login_profile_dir = None
 
-    from inercia.applicator.session import persistent_upwork_session
-    from inercia.scraper.engine import NAV_TIMEOUT_MS, block_heavy_resources
-    from inercia.scraper.selectors import UPWORK_FIND_WORK_URL, UPWORK_SEARCH_RESULTS_READY
 
+async def _stop_login_poll_task() -> None:
+    global _login_poll_task
+    task = _login_poll_task
+    if task is not None and not task.done() and task is not asyncio.current_task():
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    _login_poll_task = None
+
+
+async def _send_json_ignore_closed(websocket: Any, message: dict[str, Any]) -> None:
     try:
-        async with persistent_upwork_session(user_data_dir=profile_dir, headless=True) as context:
-            page = await context.new_page()
-            await block_heavy_resources(page)
-            response = await page.goto(UPWORK_FIND_WORK_URL, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
-            current_url = page.url.lower()
-            if response is not None and response.status >= 400:
-                return False, f"Upwork returned HTTP {response.status}"
-            if "login" in current_url or "account-security" in current_url:
-                return False, "Upwork redirected to login"
-            try:
-                await page.wait_for_selector(UPWORK_SEARCH_RESULTS_READY, timeout=8_000)
-            except PlaywrightTimeoutError:
-                pass
-            return True, "Upwork session confirmed"
+        await _send_json(websocket, message)
     except Exception as exc:
-        logger.warning("Upwork login verification failed: %s", exc)
-        return False, f"Could not verify Upwork login: {exc}"
+        logger.debug("Login status push skipped: %s", exc)
+
+
+async def _send_background_json(websocket: Any, message: dict[str, Any], label: str) -> None:
+    try:
+        await _send_json(websocket, message)
+    except Exception as exc:
+        logger.debug("%s push skipped: %s", label, exc)
+
+
+def _track_background_task(task: asyncio.Task[None]) -> None:
+    _background_tasks.add(task)
+
+    def _discard(done_task: asyncio.Task[None]) -> None:
+        _background_tasks.discard(done_task)
+        try:
+            done_task.result()
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            logger.exception("Background task failed")
+
+    task.add_done_callback(_discard)
+
+
+async def _poll_login_status(websocket: Any, profile_dir: Path) -> None:
+    global _login_auth_confirmed_at, _login_auth_confirmed_url, _login_process, _login_profile_dir, _login_poll_task
+    try:
+        while True:
+            status = _login_status_from_debug(profile_dir)
+            if status["authenticated"]:
+                current_url = str(status.get("current_url", ""))
+                now = time.monotonic()
+                if _login_auth_confirmed_url != current_url or _login_auth_confirmed_at <= 0:
+                    _login_auth_confirmed_url = current_url
+                    _login_auth_confirmed_at = now
+                    status["message"] = "Login detected. Confirming session..."
+                    await _send_json_ignore_closed(websocket, login_status(status))
+                    await asyncio.sleep(LOGIN_STATUS_POLL_INTERVAL_S)
+                    continue
+                if now - _login_auth_confirmed_at < LOGIN_AUTH_STABILITY_S:
+                    status["message"] = "Login detected. Confirming session..."
+                    await _send_json_ignore_closed(websocket, login_status(status))
+                    await asyncio.sleep(LOGIN_STATUS_POLL_INTERVAL_S)
+                    continue
+                status["message"] = "Login confirmed. Closing browser..."
+                await _send_json_ignore_closed(websocket, login_status(status))
+                await asyncio.sleep(LOGIN_AUTH_GRACE_S)
+                if _login_status_from_debug(profile_dir)["authenticated"]:
+                    await _close_login_browser_process(profile_dir)
+                    _login_auth_confirmed_at = 0.0
+                    _login_auth_confirmed_url = ""
+                    await _send_json_ignore_closed(
+                        websocket,
+                        login_browser_closed(authenticated=True, message="Session confirmed ✓"),
+                    )
+                    return
+                _login_auth_confirmed_at = 0.0
+                _login_auth_confirmed_url = ""
+                continue
+            _login_auth_confirmed_at = 0.0
+            _login_auth_confirmed_url = ""
+            if not status["browser_open"]:
+                await asyncio.sleep(LOGIN_PROFILE_FLUSH_GRACE_S)
+                _login_process = None
+                _login_profile_dir = None
+                await _send_json_ignore_closed(
+                    websocket,
+                    login_browser_closed(
+                        authenticated=False,
+                        message="Login failed - browser was closed before login completed",
+                    ),
+                )
+                return
+            await _send_json_ignore_closed(websocket, login_status(status))
+            await asyncio.sleep(LOGIN_STATUS_POLL_INTERVAL_S)
+    except asyncio.CancelledError:
+        raise
+    finally:
+        _login_auth_confirmed_at = 0.0
+        _login_auth_confirmed_url = ""
+        if _login_poll_task is asyncio.current_task():
+            _login_poll_task = None
 
 
 def _row_to_proposal_ready(row: sqlite3.Row) -> ProposalReadyData:
@@ -352,6 +541,7 @@ async def _send_initial_state(websocket: Any, db_path: Optional[Path]) -> None:
     spent_today = await asyncio.to_thread(get_connects_spent_today, db_path)
     await _send_json(websocket, connects_balance(total, spent_today))
     await _send_json(websocket, await asyncio.to_thread(build_stats, db_path))
+    await _send_json(websocket, settings_state(await asyncio.to_thread(_settings_payload, db_path)))
     ready = await asyncio.to_thread(list_ready_proposals, db_path)
     for proposal in ready:
         await _send_json(websocket, proposal_ready(proposal))
@@ -421,50 +611,99 @@ async def _handle_run_scrape(payload: dict[str, Any], websocket: Any, db_path: O
 
     query = str(payload.get("query", "")).strip()
     settings = get_settings(db_path=db_path)
-    allow_network = bool(payload.get("allow_network", settings.allow_upwork_network))
-    await _send_json(
-        websocket,
-        scrape_progress({"phase": "starting", "queued": 0, "processed": 0, "failed": 0}),
-    )
-    summary = await scrape_query(query=query, db_path=db_path, allow_network=allow_network)
-    return scrape_done(
-        {
-            "query": query or "configured filters",
-            "queued": int(summary["queued"]),
-            "processed": int(summary["processed"]),
-            "inserted": int(summary["inserted"]),
-            "failed": int(summary["failed"]),
-        }
-    )
+    allow_network_value = payload.get("allow_network")
+    allow_network = settings.allow_upwork_network if allow_network_value is None else bool(allow_network_value)
+
+    async def _run() -> None:
+        label = query or "configured filters"
+        try:
+            summary = await scrape_query(query=query, db_path=db_path, allow_network=allow_network)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            message = f"Scrape failed: {exc}"
+            logger.exception("Scrape failed | query=%s | allow_network=%s", label, allow_network)
+            await _send_background_json(
+                websocket,
+                scrape_error({"message": message, "query": label, "source": "run_scrape"}),
+                "scrape_error",
+            )
+            await _send_background_json(
+                websocket,
+                scrape_done({"query": label, "queued": 0, "processed": 0, "inserted": 0, "failed": 1}),
+                "scrape_done",
+            )
+        else:
+            await _send_background_json(
+                websocket,
+                scrape_done(
+                    {
+                        "query": label,
+                        "queued": int(summary["queued"]),
+                        "processed": int(summary["processed"]),
+                        "inserted": int(summary["inserted"]),
+                        "failed": int(summary["failed"]),
+                    }
+                ),
+                "scrape_done",
+            )
+        finally:
+            await _send_background_json(websocket, await asyncio.to_thread(build_stats, db_path), "stats_update")
+
+    response = scrape_progress({"phase": "starting", "queued": 0, "processed": 0, "failed": 0})
+    response["_after_send"] = lambda: _track_background_task(asyncio.create_task(_run()))
+    return response
 
 
 async def _handle_run_process(payload: dict[str, Any], websocket: Any, db_path: Optional[Path]) -> dict[str, Any]:
     from inercia.ai.graph import process_unprocessed_jobs
 
     limit = int(payload.get("limit", 20))
-    await _send_json(
-        websocket,
-        process_progress({"processed": 0, "ready": 0, "blacklisted": 0, "failed": 0}),
-    )
-    summary = await process_unprocessed_jobs(limit=limit, db_path=db_path)
-    return process_done(
-        {
-            "processed": int(summary["processed"]),
-            "ready": int(summary["ready"]),
-            "blacklisted": int(summary["blacklisted"]),
-            "failed": int(summary["failed"]),
-            "cap_reached": bool(summary["cap_reached"]),
-        }
-    )
+
+    async def _run() -> None:
+        try:
+            summary = await process_unprocessed_jobs(limit=limit, db_path=db_path)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            message = f"Process failed: {exc}"
+            logger.exception("Process failed | limit=%d", limit)
+            await _send_background_json(websocket, error_message(message), "process_error")
+            await _send_background_json(
+                websocket,
+                process_done({"processed": 0, "ready": 0, "blacklisted": 0, "failed": 1, "cap_reached": False}),
+                "process_done",
+            )
+        else:
+            await _send_background_json(
+                websocket,
+                process_done(
+                    {
+                        "processed": int(summary["processed"]),
+                        "ready": int(summary["ready"]),
+                        "blacklisted": int(summary["blacklisted"]),
+                        "failed": int(summary["failed"]),
+                        "cap_reached": bool(summary["cap_reached"]),
+                    }
+                ),
+                "process_done",
+            )
+        finally:
+            await _send_background_json(websocket, await asyncio.to_thread(build_stats, db_path), "stats_update")
+
+    response = process_progress({"processed": 0, "ready": 0, "blacklisted": 0, "failed": 0})
+    response["_after_send"] = lambda: _track_background_task(asyncio.create_task(_run()))
+    return response
 
 
 async def _handle_open_upwork_login(payload: dict[str, Any], websocket: Any, db_path: Optional[Path]) -> dict[str, Any]:
-    del payload, websocket
-    global _login_process, _login_profile_dir
+    del payload
+    global _login_process, _login_profile_dir, _login_poll_task
     settings = get_settings(db_path=db_path)
     profile_dir = settings.upwork_session_dir
     if _login_browser_pids(profile_dir):
         return error_message("Login browser already open")
+    await _stop_login_poll_task()
     profile_dir.mkdir(parents=True, exist_ok=True)
     browser_bin = shutil.which("chromium") or shutil.which("google-chrome") or shutil.which("google-chrome-stable")
     if browser_bin is None:
@@ -484,6 +723,7 @@ async def _handle_open_upwork_login(payload: dict[str, Any], websocket: Any, db_
         stderr=subprocess.DEVNULL,
     )
     _login_profile_dir = profile_dir
+    _login_poll_task = asyncio.create_task(_poll_login_status(websocket, profile_dir))
     return login_browser_opened()
 
 
@@ -492,23 +732,21 @@ async def _handle_close_upwork_login(payload: dict[str, Any], websocket: Any, db
     global _login_process, _login_profile_dir
     settings = get_settings(db_path=db_path)
     profile_dir = _login_profile_dir or settings.upwork_session_dir
+    await _stop_login_poll_task()
     if not _login_browser_pids(profile_dir):
         _login_process = None
         _login_profile_dir = None
-        authenticated, message = await _check_upwork_authenticated(profile_dir)
-        return login_browser_closed(authenticated=authenticated, message=message)
-    await _terminate_login_browser(profile_dir)
-    if _login_process is not None and _login_process.poll() is None:
-        try:
-            _login_process.terminate()
-            await asyncio.to_thread(_login_process.wait, 5)
-        except subprocess.TimeoutExpired:
-            _login_process.kill()
-            await asyncio.to_thread(_login_process.wait)
-    _login_process = None
-    _login_profile_dir = None
-    authenticated, message = await _check_upwork_authenticated(profile_dir)
-    return login_browser_closed(authenticated=authenticated, message=message)
+        return login_browser_closed(authenticated=False, message="Login browser was already closed")
+    await _close_login_browser_process(profile_dir)
+    return login_browser_closed(authenticated=False, message="Login canceled")
+
+
+async def _handle_check_upwork_session(payload: dict[str, Any], websocket: Any, db_path: Optional[Path]) -> dict[str, Any]:
+    del payload, websocket
+    settings = get_settings(db_path=db_path)
+    if _login_browser_pids(settings.upwork_session_dir):
+        return login_status(_login_status_from_debug(settings.upwork_session_dir))
+    return login_status(_cookie_login_status_payload(settings.upwork_session_dir))
 
 
 def _list_all_jobs(limit: int, db_path: Optional[Path]) -> list[sqlite3.Row]:
@@ -610,42 +848,63 @@ async def _handle_message(message: str, websocket: Any, db_path: Optional[Path])
         payload = json.loads(message)
     except json.JSONDecodeError:
         return error_message("Invalid JSON message")
-    message_type = payload.get("type")
-    if message_type == "user_approved":
-        return await _handle_user_approved(int(payload["proposal_id"]), db_path)
-    if message_type == "user_rejected":
-        reason = payload.get("reason")
-        return await _handle_user_rejected(
-            int(payload["proposal_id"]),
-            str(reason) if reason is not None else None,
-            db_path,
-        )
-    if message_type == "run_scrape":
-        return await _handle_run_scrape(payload, websocket, db_path)
-    if message_type == "run_process":
-        return await _handle_run_process(payload, websocket, db_path)
-    if message_type == "open_upwork_login":
-        return await _handle_open_upwork_login(payload, websocket, db_path)
-    if message_type == "close_upwork_login":
-        return await _handle_close_upwork_login(payload, websocket, db_path)
-    if message_type == "get_jobs":
-        return await _handle_get_jobs(payload, websocket, db_path)
-    if message_type == "get_settings":
-        return await _handle_get_settings(payload, websocket, db_path)
-    if message_type == "set_setting":
-        return await _handle_set_setting(payload, websocket, db_path)
-    if message_type == "set_connects_total":
-        return await _handle_set_connects_total(payload, websocket, db_path)
-    if message_type == "start_scheduler":
-        return await _handle_start_scheduler(payload, websocket, db_path)
-    if message_type == "stop_scheduler":
-        return await _handle_stop_scheduler(payload, websocket, db_path)
-    return error_message(f"Unsupported message type: {message_type}")
+    try:
+        message_type = payload.get("type")
+        if message_type == "user_approved":
+            return await _handle_user_approved(int(payload["proposal_id"]), db_path)
+        if message_type == "user_rejected":
+            reason = payload.get("reason")
+            return await _handle_user_rejected(
+                int(payload["proposal_id"]),
+                str(reason) if reason is not None else None,
+                db_path,
+            )
+        if message_type == "run_scrape":
+            return await _handle_run_scrape(payload, websocket, db_path)
+        if message_type == "run_process":
+            return await _handle_run_process(payload, websocket, db_path)
+        if message_type == "open_upwork_login":
+            return await _handle_open_upwork_login(payload, websocket, db_path)
+        if message_type == "close_upwork_login":
+            return await _handle_close_upwork_login(payload, websocket, db_path)
+        if message_type == "check_upwork_session":
+            return await _handle_check_upwork_session(payload, websocket, db_path)
+        if message_type == "get_jobs":
+            return await _handle_get_jobs(payload, websocket, db_path)
+        if message_type == "get_settings":
+            return await _handle_get_settings(payload, websocket, db_path)
+        if message_type == "set_setting":
+            return await _handle_set_setting(payload, websocket, db_path)
+        if message_type == "set_connects_total":
+            return await _handle_set_connects_total(payload, websocket, db_path)
+        if message_type == "start_scheduler":
+            return await _handle_start_scheduler(payload, websocket, db_path)
+        if message_type == "stop_scheduler":
+            return await _handle_stop_scheduler(payload, websocket, db_path)
+        return error_message(f"Unsupported message type: {message_type}")
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.exception("Message handler failed")
+        return error_message(f"Request failed: {exc}")
 
 
 async def _poll_ready(websocket: Any, db_path: Optional[Path]) -> None:
     sent: set[int] = set()
+    last_scheduler_error_seq = _scheduler_error_seq
     while True:
+        if _scheduler_last_error is not None and _scheduler_error_seq != last_scheduler_error_seq:
+            await _send_json(
+                websocket,
+                scrape_error(
+                    {
+                        "message": _scheduler_last_error,
+                        "query": "configured filters",
+                        "source": "scheduler",
+                    }
+                ),
+            )
+            last_scheduler_error_seq = _scheduler_error_seq
         ready = await asyncio.to_thread(list_ready_proposals, db_path)
         for proposal in ready:
             proposal_id = proposal["proposal_id"]
@@ -654,7 +913,8 @@ async def _poll_ready(websocket: Any, db_path: Optional[Path]) -> None:
                 sent.add(proposal_id)
         await _send_json(websocket, await asyncio.to_thread(build_stats, db_path))
         await _send_json(websocket, scheduler_status(_scheduler_status_payload()))
-        await _send_json(websocket, login_status(_login_status_payload(db_path)))
+        if _login_browser_pids(_login_profile_dir or get_settings(db_path=db_path).upwork_session_dir):
+            await _send_json(websocket, login_status(_login_status_payload(db_path)))
         await asyncio.sleep(POLL_INTERVAL_S)
 
 
@@ -663,9 +923,18 @@ async def _client_handler(websocket: Any, db_path: Optional[Path]) -> None:
     poller = asyncio.create_task(_poll_ready(websocket, db_path))
     try:
         async for message in websocket:
-            response = await _handle_message(str(message), websocket, db_path)
-            await _send_json(websocket, response)
-            await _send_json(websocket, await asyncio.to_thread(build_stats, db_path))
+            try:
+                response = await _handle_message(str(message), websocket, db_path)
+                after_send = response.pop("_after_send", None)
+                await _send_json(websocket, response)
+                if after_send is not None:
+                    after_send()
+                await _send_json(websocket, await asyncio.to_thread(build_stats, db_path))
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.exception("Client message processing failed")
+                await _send_json(websocket, error_message(f"Request failed: {exc}"))
     finally:
         poller.cancel()
         await asyncio.gather(poller, return_exceptions=True)
@@ -677,6 +946,15 @@ async def serve(db_path: Optional[Path] = None, host: str = "127.0.0.1", port: O
     settings = get_settings(db_path=db_path)
     selected_port = port or settings.ws_port
     await asyncio.to_thread(init_db, db_path or settings.db_path)
+    session_authenticated, session_message = await asyncio.to_thread(
+        _upwork_cookie_session_status,
+        settings.upwork_session_dir,
+    )
+    logger.info(
+        "Upwork session cookie status | authenticated=%s | message=%s",
+        session_authenticated,
+        session_message,
+    )
     async with websocket_serve(lambda websocket: _client_handler(websocket, db_path or settings.db_path), host, selected_port):
         logger.info("WebSocket API listening on ws://%s:%d", host, selected_port)
         await asyncio.Future()

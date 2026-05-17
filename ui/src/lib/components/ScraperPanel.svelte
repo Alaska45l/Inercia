@@ -1,5 +1,6 @@
 <script lang="ts">
   import {
+    lastScrapeError,
     lastScrapeResult,
     runConfiguredScrape,
     schedulerStatus,
@@ -31,6 +32,8 @@
   <div class="status-line">
     {#if $scrapeRunning}
       <span class="running-pulse">running</span>
+    {:else if $lastScrapeError}
+      <span class="scrape-error">{$lastScrapeError}</span>
     {:else if $lastScrapeResult}
       {$lastScrapeResult}
     {:else}

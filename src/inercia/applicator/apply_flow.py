@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-from inercia.applicator.session import UpworkSession, open_persistent_upwork_session
+from inercia.applicator.session import open_persistent_upwork_session
 from inercia.scraper.engine import NAV_TIMEOUT_MS, block_heavy_resources, human_mouse_jitter
 from inercia.scraper.selectors import (
     UPWORK_ATTACHMENT_INPUT,
@@ -19,7 +19,6 @@ from inercia.scraper.selectors import (
 logger = logging.getLogger("inercia.applicator.apply_flow")
 
 MOCK_APPLY_URL: str = "mock://upwork/apply"
-_LIVE_SESSIONS: list[UpworkSession] = []
 
 
 @dataclass(frozen=True)
@@ -136,7 +135,7 @@ async def prepare_application(
                 attachment_set = True
 
         submit_button_found = await page.locator(UPWORK_SUBMIT_BUTTON).count() > 0
-        _LIVE_SESSIONS.append(session)
+        # Browser intentionally left open for human review; Playwright holds the reference.
         logger.info("Prepared visible Upwork apply form and stopped before Submit | url=%s", payload.apply_url)
         return ApplyFlowResult(
             apply_url=payload.apply_url,

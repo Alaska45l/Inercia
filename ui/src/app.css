@@ -57,7 +57,8 @@ button:disabled {
 }
 
 button:focus-visible,
-textarea:focus-visible {
+textarea:focus-visible,
+input:focus-visible {
   outline: 1px solid var(--accent);
   outline-offset: 2px;
 }
@@ -200,6 +201,35 @@ dd {
   overflow-x: hidden;
   padding: 32px;
   background: var(--surface);
+}
+
+.panel-tabs {
+  display: flex;
+  align-items: center;
+  gap: 28px;
+  height: 40px;
+  margin-bottom: 24px;
+}
+
+.panel-tabs button {
+  height: 40px;
+  padding: 0;
+  border-bottom: 1px solid transparent;
+  background: transparent;
+  color: var(--text-3);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0;
+  line-height: 40px;
+  text-transform: uppercase;
+  transition: border-color 120ms ease, color 120ms ease;
+}
+
+.panel-tabs button.active,
+.panel-tabs button:hover {
+  border-bottom-color: var(--accent);
+  color: var(--text);
 }
 
 .topbar {
@@ -438,6 +468,336 @@ dd {
   color: var(--text-3);
 }
 
+.panel-stack {
+  display: grid;
+  gap: 32px;
+}
+
+.control-panel,
+.settings-panel {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+}
+
+.scraper-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 10px;
+}
+
+.control-input {
+  width: 100%;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: var(--surface-2);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 13px;
+}
+
+.control-input.compact {
+  max-width: 160px;
+}
+
+.control-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 96px;
+  height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--border-hi);
+  background: var(--surface-2);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1;
+}
+
+.control-button.login-open {
+  border-color: var(--ok);
+}
+
+.toggle-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text-2);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.toggle-row input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.toggle-visual {
+  position: relative;
+  width: 28px;
+  height: 14px;
+  border: 1px solid var(--border);
+  background: var(--border);
+}
+
+.toggle-visual::after {
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  width: 10px;
+  height: 10px;
+  background: var(--text-2);
+  content: "";
+}
+
+.toggle-row input:checked + .toggle-visual {
+  border-color: var(--ok);
+  background: var(--ok);
+}
+
+.toggle-row input:checked + .toggle-visual::after {
+  left: 15px;
+  background: var(--bg);
+}
+
+.status-line {
+  min-height: 18px;
+  color: var(--text-3);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.running-pulse {
+  color: var(--warn);
+  animation: opacity-pulse 800ms ease-in-out infinite;
+}
+
+.job-filter-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 24px;
+  min-height: 28px;
+}
+
+.job-filter-row button {
+  padding: 0;
+  border-bottom: 1px solid transparent;
+  background: transparent;
+  color: var(--text-3);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.5;
+  text-transform: uppercase;
+}
+
+.job-filter-row button.active,
+.job-filter-row button:hover {
+  border-bottom-color: var(--accent);
+  color: var(--text);
+}
+
+.jobs-table-wrap {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.jobs-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.jobs-table th {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-3);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.4;
+  text-align: left;
+  text-transform: uppercase;
+}
+
+.jobs-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.jobs-table tr:hover {
+  background: var(--surface-2);
+}
+
+.jobs-table .numeric {
+  text-align: right;
+}
+
+.jobs-table .mono,
+.system-info dd,
+.setting-row span {
+  font-family: var(--mono);
+}
+
+.jobs-table .is-muted {
+  color: var(--text-2);
+}
+
+.jobs-table .is-ok {
+  color: var(--ok);
+}
+
+.jobs-table .is-err {
+  color: var(--err);
+}
+
+.empty-table {
+  color: var(--text-3);
+  text-align: center;
+}
+
+.settings-panel {
+  gap: 24px;
+}
+
+.settings-section {
+  min-width: 0;
+  padding-bottom: 22px;
+  border-bottom: 1px solid var(--border);
+}
+
+.settings-section:last-child {
+  border-bottom: 0;
+}
+
+.system-info {
+  overflow: hidden;
+}
+
+.system-info dt {
+  clear: left;
+  float: left;
+  width: 160px;
+  color: var(--text-3);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.4;
+  text-transform: uppercase;
+}
+
+.system-info dd {
+  margin-left: 170px;
+  margin-bottom: 10px;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.system-info .key-ok {
+  color: var(--ok);
+}
+
+.system-info .key-err {
+  color: var(--err);
+}
+
+.runtime-section {
+  display: grid;
+  gap: 12px;
+}
+
+.setting-row {
+  display: grid;
+  grid-template-columns: 160px minmax(120px, 180px) minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+}
+
+.setting-row > label:first-child,
+.setting-label {
+  color: var(--text-3);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.4;
+  text-transform: uppercase;
+}
+
+.setting-row span {
+  color: var(--text-2);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.settings-note {
+  margin-top: 8px;
+  color: var(--text-3);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.login-panel {
+  display: grid;
+  justify-items: center;
+  gap: 12px;
+  max-width: 360px;
+  margin: 0 auto;
+  text-align: center;
+}
+
+.login-panel p,
+.login-state {
+  color: var(--text-3);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.login-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.blink-dot {
+  width: 6px;
+  height: 6px;
+  background: var(--ok);
+  animation: dot-blink 800ms step-end infinite;
+}
+
+@keyframes opacity-pulse {
+  0%,
+  100% {
+    opacity: 0.3;
+  }
+
+  50% {
+    opacity: 1;
+  }
+}
+
+@keyframes dot-blink {
+  0%,
+  100% {
+    opacity: 0.3;
+  }
+
+  50% {
+    opacity: 1;
+  }
+}
+
 @media (max-width: 1100px) {
   .topbar {
     grid-template-columns: 1fr;
@@ -446,5 +806,15 @@ dd {
 
   .filter-chips {
     justify-content: flex-start;
+  }
+
+  .scraper-row,
+  .setting-row {
+    grid-template-columns: 1fr;
+    align-items: start;
+  }
+
+  .control-input.compact {
+    max-width: none;
   }
 }

@@ -2,6 +2,7 @@ import { derived, get, writable } from 'svelte/store';
 
 export type ProposalStatus = 'pending' | 'approved' | 'rejected' | 'submitted';
 export type FilterMode = 'all' | ProposalStatus;
+export type Panel = 'proposals' | 'scraper' | 'jobs' | 'settings';
 
 export interface Proposal {
   proposal_id: number;
@@ -33,12 +34,45 @@ export interface ConnectsBalance {
   remaining: number;
 }
 
+export interface JobRow {
+  id: number;
+  upwork_id: string;
+  title: string;
+  job_type: 'hourly' | 'fixed';
+  roi_score: number | null;
+  status: string;
+  scraped_at: string;
+}
+
+export interface SettingsState {
+  daily_proposal_cap: number;
+  floor_hourly_rate: number;
+  floor_fixed_rate: number;
+  allow_upwork_network: boolean;
+  db_path: string;
+  upwork_session_dir: string;
+  ws_port: number;
+  has_gemini_key: boolean;
+  has_opencode_key: boolean;
+}
+
 type ServerMessage =
   | { type: 'proposal_ready'; data: Proposal }
   | { type: 'stats_update'; data: Stats }
   | { type: 'connects_balance'; data: ConnectsBalance }
   | { type: 'user_approved_ack'; data: { proposal_id: number } }
   | { type: 'user_rejected_ack'; data: { proposal_id: number } }
+  | { type: 'scrape_progress'; data: { phase: string; queued: number; processed: number; failed: number } }
+  | { type: 'scrape_done'; data: { query: string; queued: number; processed: number; inserted: number; failed: number } }
+  | { type: 'process_progress'; data: { processed: number; ready: number; blacklisted: number; failed: number } }
+  | {
+      type: 'process_done';
+      data: { processed: number; ready: number; blacklisted: number; failed: number; cap_reached: boolean };
+    }
+  | { type: 'jobs_list'; data: { jobs: JobRow[] } }
+  | { type: 'settings_state'; data: SettingsState }
+  | { type: 'login_browser_opened' }
+  | { type: 'login_browser_closed' }
   | { type: 'error'; data: { message: string } };
 
 export const proposals = writable<Proposal[]>([]);
@@ -51,8 +85,16 @@ export const stats = writable<Stats>({
 });
 export const connects = writable<ConnectsBalance>({ total: 211, spent_today: 0, remaining: 211 });
 export const filterMode = writable<FilterMode>('all');
+export const activePanel = writable<Panel>('proposals');
 export const connectionState = writable<'connecting' | 'connected' | 'offline'>('connecting');
 export const lastError = writable<string>('');
+export const jobs = writable<JobRow[]>([]);
+export const settingsState = writable<SettingsState | null>(null);
+export const scrapeRunning = writable(false);
+export const processRunning = writable(false);
+export const loginBrowserOpen = writable(false);
+export const lastScrapeResult = writable<string>('');
+export const lastProcessResult = writable<string>('');
 
 export const filteredProposals = derived([proposals, filterMode], ([$proposals, $filterMode]) => {
   if ($filterMode === 'all') {
@@ -98,15 +140,59 @@ function handleMessage(message: ServerMessage): void {
     return;
   }
   if (message.type === 'user_approved_ack') {
-    updateProposal(message.data.proposal_id, { status: 'approved' });
+    updateProposal(message.data.proposal_id, { status: 'submitted' });
     return;
   }
   if (message.type === 'user_rejected_ack') {
     updateProposal(message.data.proposal_id, { status: 'rejected' });
     return;
   }
+  if (message.type === 'scrape_progress') {
+    scrapeRunning.set(true);
+    lastScrapeResult.set(`${message.data.phase} · queued ${message.data.queued} · processed ${message.data.processed}`);
+    return;
+  }
+  if (message.type === 'scrape_done') {
+    scrapeRunning.set(false);
+    lastScrapeResult.set(
+      `${message.data.query} · queued ${message.data.queued} · processed ${message.data.processed} · inserted ${message.data.inserted} · failed ${message.data.failed}`
+    );
+    return;
+  }
+  if (message.type === 'process_progress') {
+    processRunning.set(true);
+    lastProcessResult.set(
+      `processed ${message.data.processed} · ready ${message.data.ready} · blacklisted ${message.data.blacklisted} · failed ${message.data.failed}`
+    );
+    return;
+  }
+  if (message.type === 'process_done') {
+    processRunning.set(false);
+    lastProcessResult.set(
+      `processed ${message.data.processed} · ready ${message.data.ready} · blacklisted ${message.data.blacklisted} · failed ${message.data.failed}${message.data.cap_reached ? ' · cap reached' : ''}`
+    );
+    return;
+  }
+  if (message.type === 'jobs_list') {
+    jobs.set(message.data.jobs);
+    return;
+  }
+  if (message.type === 'settings_state') {
+    settingsState.set(message.data);
+    return;
+  }
+  if (message.type === 'login_browser_opened') {
+    loginBrowserOpen.set(true);
+    return;
+  }
+  if (message.type === 'login_browser_closed') {
+    loginBrowserOpen.set(false);
+    return;
+  }
   if (message.type === 'error') {
     lastError.set(message.data.message);
+    scrapeRunning.set(false);
+    processRunning.set(false);
   }
 }
 
@@ -162,6 +248,40 @@ export function rejectProposal(proposalId: number, reason: string | null = null)
 
 export function saveEditedLetter(proposalId: number, coverLetter: string): void {
   updateProposal(proposalId, { cover_letter: coverLetter });
+}
+
+export function runScrape(query: string, allowNetwork: boolean): void {
+  scrapeRunning.set(true);
+  sendMessage({ type: 'run_scrape', query, allow_network: allowNetwork });
+}
+
+export function runProcess(limit: number): void {
+  processRunning.set(true);
+  sendMessage({ type: 'run_process', limit });
+}
+
+export function openUpworkLogin(): void {
+  sendMessage({ type: 'open_upwork_login' });
+}
+
+export function closeUpworkLogin(): void {
+  sendMessage({ type: 'close_upwork_login' });
+}
+
+export function requestJobs(status: string | null = null, limit = 100): void {
+  sendMessage({ type: 'get_jobs', status, limit });
+}
+
+export function requestSettings(): void {
+  sendMessage({ type: 'get_settings' });
+}
+
+export function setSetting(key: string, value: string): void {
+  sendMessage({ type: 'set_setting', key, value });
+}
+
+export function updateConnectsTotal(total: number): void {
+  sendMessage({ type: 'set_connects_total', total });
 }
 
 export const proposalCounts = derived(proposals, ($proposals) => ({

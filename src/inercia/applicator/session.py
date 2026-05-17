@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import logging
+import shutil
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from inercia.config import get_settings
 from inercia.scraper.engine import CHROMIUM_ARGS, apply_stealth, random_viewport
@@ -25,6 +26,8 @@ class UpworkSession:
 async def open_persistent_upwork_session(
     user_data_dir: Optional[Path] = None,
     headless: bool = True,
+    stealth: bool = True,
+    system_browser: bool = False,
 ) -> UpworkSession:
     from playwright.async_api import async_playwright
 
@@ -33,20 +36,37 @@ async def open_persistent_upwork_session(
     profile_dir.mkdir(parents=True, exist_ok=True)
     playwright = await async_playwright().start()
     try:
+        context_kwargs: dict[str, Any] = {
+            "user_data_dir": str(profile_dir),
+            "headless": headless,
+            "viewport": random_viewport(),
+            "locale": "en-US",
+            "timezone_id": "America/Argentina/Buenos_Aires",
+            "accept_downloads": False,
+        }
+        if stealth:
+            context_kwargs["args"] = CHROMIUM_ARGS
+        else:
+            context_kwargs["args"] = ["--lang=en-US,en;q=0.9"]
+        if system_browser:
+            executable_path = shutil.which("chromium") or shutil.which("google-chrome") or shutil.which("google-chrome-stable")
+            if executable_path is not None:
+                context_kwargs["executable_path"] = executable_path
         context = await playwright.chromium.launch_persistent_context(
-            user_data_dir=str(profile_dir),
-            headless=headless,
-            args=CHROMIUM_ARGS,
-            viewport=random_viewport(),
-            locale="en-US",
-            timezone_id="America/Argentina/Buenos_Aires",
-            accept_downloads=False,
+            **context_kwargs,
         )
-        await apply_stealth(context)
+        if stealth:
+            await apply_stealth(context)
     except Exception:
         await playwright.stop()
         raise
-    logger.info("Persistent Upwork session opened | dir=%s | headless=%s", profile_dir, headless)
+    logger.info(
+        "Persistent Upwork session opened | dir=%s | headless=%s | stealth=%s | system_browser=%s",
+        profile_dir,
+        headless,
+        stealth,
+        system_browser,
+    )
     return UpworkSession(playwright=playwright, context=context)
 
 

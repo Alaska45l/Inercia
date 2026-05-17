@@ -123,7 +123,11 @@ def _normalize_proposal_values(proposal: Mapping[str, Any]) -> dict[str, Any]:
 
     values = {column: proposal.get(column) for column in PROPOSAL_COLUMNS if column in proposal}
     if "screening_answers" in values:
-        values["screening_answers"] = _json_or_none(values["screening_answers"])
+        screening_answers = values["screening_answers"]
+        if isinstance(screening_answers, str):
+            values["screening_answers"] = screening_answers
+        else:
+            values["screening_answers"] = _json_or_none(screening_answers)
     return values
 
 
@@ -306,6 +310,22 @@ def get_session_value(key: str, db_path: Optional[Path] = None) -> Optional[str]
     return str(row["value"])
 
 
+def get_runtime_overrides(db_path: Optional[Path] = None) -> dict[str, str]:
+    keys = (
+        "DAILY_PROPOSAL_CAP",
+        "FLOOR_HOURLY_RATE",
+        "FLOOR_FIXED_RATE",
+        "ALLOW_UPWORK_NETWORK",
+    )
+    placeholders = ", ".join("?" for _ in keys)
+    with get_connection(db_path) as conn:
+        rows = conn.execute(
+            f"SELECT key, value FROM sessions WHERE key IN ({placeholders});",
+            keys,
+        ).fetchall()
+    return {str(row["key"]): str(row["value"]) for row in rows}
+
+
 __all__ = [
     "create_proposal",
     "count_submitted_today",
@@ -314,6 +334,7 @@ __all__ = [
     "get_job",
     "get_job_by_upwork_id",
     "get_proposal",
+    "get_runtime_overrides",
     "get_session_value",
     "init_db",
     "list_jobs_by_status",

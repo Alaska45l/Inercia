@@ -59,6 +59,98 @@ class UserRejected(TypedDict):
     reason: Optional[str]
 
 
+class RunScrape(TypedDict):
+    type: Literal["run_scrape"]
+    query: str
+    allow_network: bool
+
+
+class RunProcess(TypedDict):
+    type: Literal["run_process"]
+    limit: int
+
+
+class OpenUpworkLogin(TypedDict):
+    type: Literal["open_upwork_login"]
+
+
+class CloseUpworkLogin(TypedDict):
+    type: Literal["close_upwork_login"]
+
+
+class GetJobs(TypedDict):
+    type: Literal["get_jobs"]
+    status: Optional[str]
+    limit: int
+
+
+class GetSettings(TypedDict):
+    type: Literal["get_settings"]
+
+
+class SetSetting(TypedDict):
+    type: Literal["set_setting"]
+    key: str
+    value: str
+
+
+class SetConnectsTotal(TypedDict):
+    type: Literal["set_connects_total"]
+    total: int
+
+
+class ScrapeProgressData(TypedDict):
+    phase: str
+    queued: int
+    processed: int
+    failed: int
+
+
+class ScrapeDoneData(TypedDict):
+    query: str
+    queued: int
+    processed: int
+    inserted: int
+    failed: int
+
+
+class ProcessProgressData(TypedDict):
+    processed: int
+    ready: int
+    blacklisted: int
+    failed: int
+
+
+class ProcessDoneData(TypedDict):
+    processed: int
+    ready: int
+    blacklisted: int
+    failed: int
+    cap_reached: bool
+
+
+class JobRow(TypedDict):
+    id: int
+    upwork_id: str
+    title: str
+    job_type: str
+    roi_score: Optional[float]
+    status: str
+    scraped_at: str
+
+
+class SettingsData(TypedDict):
+    daily_proposal_cap: int
+    floor_hourly_rate: float
+    floor_fixed_rate: float
+    allow_upwork_network: bool
+    db_path: str
+    upwork_session_dir: str
+    ws_port: int
+    has_gemini_key: bool
+    has_opencode_key: bool
+
+
 def proposal_ready(data: ProposalReadyData) -> ProposalReady:
     return {"type": "proposal_ready", "data": data}
 
@@ -78,17 +170,71 @@ def error_message(message: str) -> dict[str, Any]:
     return {"type": "error", "data": {"message": message}}
 
 
+def scrape_progress(data: ScrapeProgressData) -> dict[str, Any]:
+    return {"type": "scrape_progress", "data": data}
+
+
+def scrape_done(data: ScrapeDoneData) -> dict[str, Any]:
+    return {"type": "scrape_done", "data": data}
+
+
+def process_progress(data: ProcessProgressData) -> dict[str, Any]:
+    return {"type": "process_progress", "data": data}
+
+
+def process_done(data: ProcessDoneData) -> dict[str, Any]:
+    return {"type": "process_done", "data": data}
+
+
+def jobs_list(jobs: list[JobRow]) -> dict[str, Any]:
+    return {"type": "jobs_list", "data": {"jobs": jobs}}
+
+
+def settings_state(data: SettingsData) -> dict[str, Any]:
+    return {"type": "settings_state", "data": data}
+
+
+def login_browser_opened() -> dict[str, Any]:
+    return {"type": "login_browser_opened"}
+
+
+def login_browser_closed() -> dict[str, Any]:
+    return {"type": "login_browser_closed"}
+
+
 __all__ = [
+    "CloseUpworkLogin",
     "ConnectsBalance",
     "ConnectsBalanceData",
+    "GetJobs",
+    "GetSettings",
+    "JobRow",
+    "OpenUpworkLogin",
+    "ProcessDoneData",
+    "ProcessProgressData",
     "ProposalReady",
     "ProposalReadyData",
+    "RunProcess",
+    "RunScrape",
+    "ScrapeDoneData",
+    "ScrapeProgressData",
+    "SetConnectsTotal",
+    "SetSetting",
+    "SettingsData",
     "StatsData",
     "StatsUpdate",
     "UserApproved",
     "UserRejected",
     "connects_balance",
     "error_message",
+    "jobs_list",
+    "login_browser_closed",
+    "login_browser_opened",
     "proposal_ready",
+    "process_done",
+    "process_progress",
+    "scrape_done",
+    "scrape_progress",
+    "settings_state",
     "stats_update",
 ]

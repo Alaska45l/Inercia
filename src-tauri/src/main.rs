@@ -42,8 +42,9 @@ struct CommandAck {
 }
 
 fn looks_like_project_root(path: &Path) -> bool {
-    path.join(".venv").join("bin").join("python").exists()
-        && path.join("src").join("inercia").exists()
+    let unix_py = path.join(".venv").join("bin").join("python");
+    let win_py = path.join(".venv").join("Scripts").join("python.exe");
+    (unix_py.exists() || win_py.exists()) && path.join("src").join("inercia").exists()
 }
 
 fn walk_for_project_root(start: &Path) -> Option<PathBuf> {
@@ -83,9 +84,12 @@ fn resolve_project_root(app: &AppHandle) -> Result<PathBuf, String> {
 fn spawn_python_api(app: &AppHandle, state: &PythonSidecar) -> Result<(), String> {
     let cwd = resolve_project_root(app)?;
     let pythonpath = cwd.join("src");
-    let venv_python = cwd.join(".venv").join("bin").join("python");
-    let python_bin = if venv_python.exists() {
-        venv_python
+    let unix_py = cwd.join(".venv").join("bin").join("python");
+    let win_py = cwd.join(".venv").join("Scripts").join("python.exe");
+    let python_bin = if unix_py.exists() {
+        unix_py
+    } else if win_py.exists() {
+        win_py
     } else {
         std::path::PathBuf::from("python")
     };

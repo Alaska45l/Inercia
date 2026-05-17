@@ -8,21 +8,20 @@
 
   $: country = proposal.client_country || 'Unknown';
   $: rateLabel = proposal.bid_type === 'hourly' ? `$${proposal.bid_rate.toFixed(0)}/hr` : `$${proposal.bid_rate.toFixed(0)}`;
-  $: preview = proposal.cover_letter.split(/\s+/).slice(0, 34).join(' ');
   $: statusLocked = proposal.status !== 'pending';
 </script>
 
-<article class="proposal-card">
-  <div class="card-hardware" aria-hidden="true">
-    <span></span>
-    <span></span>
-  </div>
+<article
+  class="proposal-card"
+  class:pending={proposal.status === 'pending'}
+  class:approved={proposal.status === 'approved'}
+  class:rejected={proposal.status === 'rejected'}
+>
   <header class="proposal-head">
     <div>
       <h3>{proposal.title}</h3>
       <p>{country}</p>
     </div>
-    <span class={`status-badge ${proposal.status}`}>{proposal.status}</span>
   </header>
 
   <div class="metric-row">
@@ -41,31 +40,21 @@
   </div>
 
   <section class="letter-preview">
-    <div class="letter-label">
-      <span>Cover</span>
-      <i aria-hidden="true"></i>
-    </div>
-    <div class:clamped={!expanded}>
-      {#if expanded}
-        {proposal.cover_letter}
-      {:else}
-        {preview}
-      {/if}
-    </div>
+    <p class:clamped={!expanded}>{proposal.cover_letter}</p>
     <button type="button" on:click={() => (expanded = !expanded)}>
-      {expanded ? 'Close' : 'Open'}
+      {expanded ? 'show less' : 'show more'}
     </button>
   </section>
 
   {#if expanded && Object.keys(proposal.screening_answers).length > 0}
-    <section class="answers-block">
+    <dl class="answer-list">
       {#each Object.entries(proposal.screening_answers) as [question, answer]}
         <div>
-          <h4>{question}</h4>
-          <p>{answer}</p>
+          <dt>{question}</dt>
+          <dd>{answer}</dd>
         </div>
       {/each}
-    </section>
+    </dl>
   {/if}
 
   <ApprovalBar proposalId={proposal.proposal_id} coverLetter={proposal.cover_letter} disabled={statusLocked} />

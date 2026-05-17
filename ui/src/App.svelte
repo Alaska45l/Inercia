@@ -19,29 +19,15 @@
 </script>
 
 <main class="app-shell">
-  <div class="glyph-rail" aria-hidden="true">
-    <span></span>
-    <span></span>
-    <span></span>
-  </div>
   <aside class="sidebar">
     <div class="brand-block">
-      <div class="mark">
-        <span>I</span>
-      </div>
-      <div>
-        <h1>Inercia</h1>
-        <p class:online={$connectionState === 'connected'}>{$connectionState}</p>
-      </div>
-    </div>
-
-    <div class="status-board" aria-hidden="true">
-      <span class:lit={$connectionState === 'connected'}></span>
-      <span></span>
-      <span class="warm"></span>
-      <span></span>
-      <span></span>
-      <span class:lit={$filteredProposals.length > 0}></span>
+      <h1>INERCIA</h1>
+      <span
+        class="connection-dot"
+        class:connected={$connectionState === 'connected'}
+        aria-label={`Connection ${$connectionState}`}
+        title={$connectionState}
+      ></span>
     </div>
 
     <ConnectsTracker balance={$connects} />
@@ -64,8 +50,7 @@
     <div class="proposal-grid">
       {#if $filteredProposals.length === 0}
         <div class="empty-state">
-          <h3>No proposals</h3>
-          <p>Waiting for the pipeline.</p>
+          <p>No proposals.</p>
         </div>
       {:else}
         {#each $filteredProposals as proposal (proposal.proposal_id)}

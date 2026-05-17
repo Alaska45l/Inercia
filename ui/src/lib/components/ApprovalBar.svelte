@@ -20,15 +20,12 @@
 
 <div class="approval-bar">
   <button class="accept" type="button" disabled={disabled} title="Accept proposal" on:click={() => approveProposal(proposalId)}>
-    <span></span>
     Accept
   </button>
   <button class="reject" type="button" disabled={disabled} title="Reject proposal" on:click={() => rejectProposal(proposalId)}>
-    <span></span>
     Reject
   </button>
   <button class="edit" type="button" disabled={disabled} title="Edit cover letter" on:click={() => (editing = !editing)}>
-    <span></span>
     Edit
   </button>
 </div>

@@ -4,10 +4,7 @@
   export let stats: Stats;
 </script>
 
-<section class="panel stats-panel" aria-label="Today stats">
-  <div class="panel-title">
-    <span>Today</span>
-  </div>
+<section class="stats-panel" aria-label="Today stats">
   <div class="stats-grid">
     <div>
       <strong>{stats.today_submitted}</strong>

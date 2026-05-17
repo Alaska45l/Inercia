@@ -20,8 +20,7 @@
       aria-selected={$filterMode === item.value}
       on:click={() => filterMode.set(item.value)}
     >
-      <span>{item.label}</span>
-      <strong>{$proposalCounts[item.value]}</strong>
+      {item.label} ({$proposalCounts[item.value]})
     </button>
   {/each}
 </div>

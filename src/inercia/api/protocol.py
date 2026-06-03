@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Literal, Optional, TypedDict
+from typing import Any, Literal, NotRequired, Optional, TypedDict
 
 
 class ProposalReadyData(TypedDict):
@@ -51,12 +51,18 @@ class ConnectsBalance(TypedDict):
 class UserApproved(TypedDict):
     type: Literal["user_approved"]
     proposal_id: int
+    cover_letter: NotRequired[Optional[str]]
 
 
 class UserRejected(TypedDict):
     type: Literal["user_rejected"]
     proposal_id: int
     reason: Optional[str]
+
+
+class ConfirmSubmitted(TypedDict):
+    type: Literal["confirm_submitted"]
+    proposal_id: int
 
 
 class RunScrape(TypedDict):
@@ -198,6 +204,7 @@ class SettingsData(TypedDict):
     db_path: str
     upwork_session_dir: str
     ws_port: int
+    login_debug_port: int
     has_gemini_key: bool
     has_opencode_key: bool
     scheduler_interval_min_minutes: int
@@ -281,6 +288,7 @@ def login_status(data: LoginStatusData) -> LoginStatus:
 __all__ = [
     "CloseUpworkLogin",
     "CheckUpworkSession",
+    "ConfirmSubmitted",
     "ConnectsBalance",
     "ConnectsBalanceData",
     "GetJobs",

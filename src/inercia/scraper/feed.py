@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import urllib.parse
 import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from typing import Optional
+
+from inercia.scraper.engine import USER_AGENTS
 
 logger = logging.getLogger("inercia.scraper.feed")
 
@@ -34,6 +37,7 @@ class FeedJob:
     title: str
     url: str
     description: str
+    job_type: str = "hourly"
 
 
 class FeedDownloadError(RuntimeError):
@@ -60,6 +64,13 @@ def extract_upwork_id(url: str) -> str:
     return url.rstrip("/").rsplit("/", 1)[-1]
 
 
+def _extract_job_type(text: str) -> str:
+    lowered = text.lower()
+    if "fixed-price" in lowered or "fixed price" in lowered or "job type: fixed" in lowered:
+        return "fixed"
+    return "hourly"
+
+
 def parse_rss(feed_xml: str) -> list[FeedJob]:
     root = ET.fromstring(feed_xml)
     jobs: list[FeedJob] = []
@@ -68,12 +79,15 @@ def parse_rss(feed_xml: str) -> list[FeedJob]:
         if not url:
             continue
         guid = _text(item, "guid")
+        title = _text(item, "title") or "Untitled Upwork job"
+        description = _text(item, "description")
         jobs.append(
             FeedJob(
                 upwork_id=guid or extract_upwork_id(url),
-                title=_text(item, "title") or "Untitled Upwork job",
+                title=title,
                 url=url,
-                description=_text(item, "description"),
+                description=description,
+                job_type=_extract_job_type(f"{title}\n{description}"),
             )
         )
     return jobs
@@ -87,7 +101,7 @@ def _download_feed(query: str, timeout: float) -> str:
     url = build_feed_url(query)
     request = urllib.request.Request(
         url,
-        headers={"User-Agent": "Inercia/1.0.0 (+offline-first scraper)"},
+        headers={"User-Agent": random.choice(USER_AGENTS)},
     )
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:

@@ -130,10 +130,13 @@ async def extract_job_detail(
         response_model=JobDetail,
         fallback_factory=fallback,
     )
+    updates: dict[str, object] = {}
     if detail.upwork_id is None:
-        detail.upwork_id = upwork_id
+        updates["upwork_id"] = upwork_id
     if detail.raw_markdown is None:
-        detail.raw_markdown = raw_markdown
+        updates["raw_markdown"] = raw_markdown
+    if updates:
+        detail = detail.model_copy(update=updates)
     logger.info("Extracted job detail | upwork_id=%s | title=%s", detail.upwork_id, detail.title)
     return detail
 

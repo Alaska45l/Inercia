@@ -1,13 +1,14 @@
 <script lang="ts">
   import { filterMode, proposalCounts } from '../stores/proposals';
 
-  type FilterChipMode = 'all' | 'pending' | 'approved' | 'rejected';
+  type FilterChipMode = 'all' | 'pending' | 'approved' | 'rejected' | 'submitted';
 
   const filters: { label: string; value: FilterChipMode }[] = [
     { label: 'All', value: 'all' },
     { label: 'Pending', value: 'pending' },
     { label: 'Approved', value: 'approved' },
-    { label: 'Rejected', value: 'rejected' }
+    { label: 'Rejected', value: 'rejected' },
+    { label: 'Submitted', value: 'submitted' }
   ];
 </script>
 

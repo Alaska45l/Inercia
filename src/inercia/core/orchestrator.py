@@ -3,19 +3,20 @@ from __future__ import annotations
 import asyncio
 import logging
 from pathlib import Path
-from typing import Optional, Union
+from typing import Any, Optional, Union
 
 from inercia.config import get_settings
 from inercia.core.state import EstadoBot
 from inercia.db.manager import init_db, set_session_value, upsert_job
 from inercia.scraper.feed import FeedDownloadError, FeedJob, fetch_jobs
+from inercia.scraper.engine import stealth_context
 from inercia.scraper.filter_scraper import FilteredJobCard, LAST_SCRAPED_UPWORK_ID_KEY, discover_filtered_jobs
 from inercia.scraper.job_detail import extract_job_markdown
 
 logger = logging.getLogger("inercia.core.orchestrator")
 
 QUEUE_MAXSIZE: int = 50
-CONSUMER_COUNT: int = 2
+CONSUMER_COUNT: int = 1
 _QUEUE_SENTINEL: object = object()
 
 
@@ -24,7 +25,7 @@ def _job_payload(feed_job: FeedJob | FilteredJobCard, raw_markdown: str) -> dict
         "upwork_id": feed_job.upwork_id,
         "title": feed_job.title,
         "description": feed_job.description or raw_markdown[:500],
-        "job_type": "hourly",
+        "job_type": feed_job.job_type,
         "raw_markdown": raw_markdown,
         "status": "new",
     }
@@ -43,7 +44,7 @@ async def _producer(
     state.set_phase("fetching_filtered_search" if allow_network else "fetching_feed")
     try:
         if allow_network:
-            jobs = await discover_filtered_jobs(db_path=db_path)
+            jobs = await discover_filtered_jobs(query=query, db_path=db_path)
         else:
             jobs = await fetch_jobs(query=query, feed_xml=feed_xml, allow_network=False)
         if jobs:
@@ -66,31 +67,43 @@ async def _consumer(
     state: EstadoBot,
     db_path: Optional[Path],
     allow_network: bool,
+    browser_lock: asyncio.Lock,
 ) -> None:
     state.set_phase("consuming_details")
     settings = get_settings(db_path=db_path)
-    while True:
-        item = await queue.get()
-        try:
-            if item is _QUEUE_SENTINEL:
-                return
-            if not isinstance(item, (FeedJob, FilteredJobCard)):
-                raise TypeError("Unexpected queue item")
-            detail = await extract_job_markdown(
-                item.url,
-                allow_network=allow_network,
-                user_data_dir=settings.upwork_session_dir if allow_network else None,
-            )
-            payload = _job_payload(item, detail.markdown)
-            await asyncio.to_thread(upsert_job, payload, db_path)
-            state.record_processed(inserted=True)
-        except Exception as exc:
-            message = f"{type(exc).__name__}: {exc}"
-            logger.exception("Consumer failed")
-            state.record_error(message)
-            state.record_processed(inserted=False)
-        finally:
-            queue.task_done()
+    context_manager: Any = None
+    context: Any = None
+    try:
+        while True:
+            item = await queue.get()
+            try:
+                if item is _QUEUE_SENTINEL:
+                    return
+                if not isinstance(item, (FeedJob, FilteredJobCard)):
+                    raise TypeError("Unexpected queue item")
+                if allow_network and context is None:
+                    async with browser_lock:
+                        context_manager = stealth_context(str(settings.upwork_session_dir))
+                        context = await context_manager.__aenter__()
+                detail = await extract_job_markdown(
+                    item.url,
+                    allow_network=allow_network,
+                    user_data_dir=settings.upwork_session_dir if allow_network else None,
+                    context=context,
+                )
+                payload = _job_payload(item, detail.markdown)
+                await asyncio.to_thread(upsert_job, payload, db_path)
+                state.record_processed(inserted=True)
+            except Exception as exc:
+                message = f"{type(exc).__name__}: {exc}"
+                logger.exception("Consumer failed")
+                state.record_error(message)
+                state.record_processed(inserted=False)
+            finally:
+                queue.task_done()
+    finally:
+        if context_manager is not None:
+            await context_manager.__aexit__(None, None, None)
 
 
 async def scrape_query(
@@ -103,7 +116,8 @@ async def scrape_query(
     await asyncio.to_thread(init_db, db_path)
     queue: asyncio.Queue[Union[FeedJob, FilteredJobCard, object]] = asyncio.Queue(maxsize=QUEUE_MAXSIZE)
     first_seen_upwork_ids: list[str] = []
-    consumer_count = 1 if allow_network else CONSUMER_COUNT
+    consumer_count = 1
+    browser_lock = asyncio.Lock()
     producer_task = asyncio.create_task(
         _producer(
             query=query,
@@ -118,7 +132,13 @@ async def scrape_query(
     )
     consumer_tasks = [
         asyncio.create_task(
-            _consumer(queue=queue, state=state, db_path=db_path, allow_network=allow_network)
+            _consumer(
+                queue=queue,
+                state=state,
+                db_path=db_path,
+                allow_network=allow_network,
+                browser_lock=browser_lock,
+            )
         )
         for _ in range(consumer_count)
     ]

@@ -38,7 +38,7 @@ Inercia fuses the best of both under a strict technical philosophy:
 * **4-Node LangGraph Pipeline:** `Extractor` (Gemini Flash → structured JSON) → `Investor` (deterministic ROI, no LLM) → `Copywriter` (Gemini Pro → 150-word cover letter) → `Critic` (Gemini Flash → self-reflection, max 2 rewrites).
 * **Offline-First Design:** Every LLM node has a deterministic fallback. If `GEMINI_API_KEY` is not set, the full pipeline still runs with hardcoded logic — perfect for development and testing.
 * **RSS + Playwright Hybrid:** Job discovery via Upwork's RSS feed (no browser needed), job detail extraction via stealth Playwright (only for the job page).
-* **WebSocket Bridge:** Python API server on `ws://127.0.0.1:9741` pushes `ProposalReady` events to the Tauri frontend in real-time.
+* **WebSocket API:** Python API server on `ws://127.0.0.1:{WS_PORT}` pushes `ProposalReady` events directly to the Tauri frontend in real-time.
 * **Daily Proposal Cap:** Hardcoded limit of 12 proposals/day, enforced at pipeline level before each job is processed.
 * **Connects Tracking:** Every approval logs connects spent to the `connects_log` table. The UI shows a circular progress tracker with remaining balance.
 
@@ -89,10 +89,10 @@ inercia/
 │       │   ├── models.py             # Dataclasses for DB rows
 │       │   └── schema.sql            # DDL: jobs, proposals, connects_log, sessions
 │       └── api/
-│           ├── server.py             # WebSocket server (ws://127.0.0.1:9741)
+│           ├── server.py             # WebSocket server (ws://127.0.0.1:{WS_PORT})
 │           └── protocol.py           # JSON message types (ProposalReady, UserApproved, ...)
 ├── src-tauri/
-│   ├── src/main.rs                   # Tauri app: Python sidecar + WebSocket bridge
+│   ├── src/main.rs                   # Tauri app: Python sidecar lifecycle
 │   ├── Cargo.toml
 │   └── tauri.conf.json
 └── ui/                               # Svelte 5 frontend
@@ -162,6 +162,9 @@ FLOOR_FIXED_RATE=50
 
 # WebSocket API port
 WS_PORT=9741
+
+# Login browser DevTools port
+LOGIN_DEBUG_PORT=9742
 ```
 
 ### 4. External System Dependencies

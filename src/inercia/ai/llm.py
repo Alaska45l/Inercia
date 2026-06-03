@@ -7,7 +7,7 @@ import urllib.error
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Generic, Optional, TypeVar
+from typing import Any, ClassVar, Generic, Optional, TypeVar
 
 from pydantic import BaseModel
 
@@ -31,6 +31,8 @@ class TokenUsage:
 
 
 class StructuredLLM(Generic[T]):
+    _gemini_clients: ClassVar[dict[str, Any]] = {}
+
     def __init__(self) -> None:
         self.usage = TokenUsage()
 
@@ -53,6 +55,17 @@ class StructuredLLM(Generic[T]):
             or "error 1010" in message
         )
 
+    @classmethod
+    def _get_gemini_client(cls, api_key: str) -> Any:
+        client = cls._gemini_clients.get(api_key)
+        if client is not None:
+            return client
+        from google import genai
+
+        client = genai.Client(api_key=api_key)
+        cls._gemini_clients[api_key] = client
+        return client
+
     def _generate_sync(
         self,
         model: str,
@@ -60,13 +73,13 @@ class StructuredLLM(Generic[T]):
         user_prompt: str,
         response_model: type[T],
     ) -> T:
-        from google import genai
-
-        client = genai.Client(api_key=get_settings().gemini_api_key)
+        settings = get_settings()
+        client = self._get_gemini_client(settings.gemini_api_key)
         response = client.models.generate_content(
             model=model,
-            contents=f"{system_prompt}\n\n{user_prompt}",
+            contents=user_prompt,
             config={
+                "system_instruction": system_prompt,
                 "response_mime_type": "application/json",
                 "response_schema": response_model,
             },

@@ -4,9 +4,14 @@ import asyncio
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
+
+from inercia.config import get_settings
 from inercia.scraper.feed import extract_upwork_id
 from inercia.scraper.selectors import UPWORK_MAIN
+
+if TYPE_CHECKING:
+    from playwright.async_api import BrowserContext
 
 logger = logging.getLogger("inercia.scraper.job_detail")
 
@@ -56,6 +61,7 @@ async def extract_job_markdown(
     url: str,
     allow_network: bool = False,
     user_data_dir: Optional[Path] = None,
+    context: Optional["BrowserContext"] = None,
 ) -> JobMarkdown:
     upwork_id = extract_upwork_id(url)
     if not allow_network or is_mock_url(url):
@@ -66,8 +72,8 @@ async def extract_job_markdown(
 
     from inercia.scraper.engine import NAV_TIMEOUT_MS, block_heavy_resources, human_mouse_jitter, stealth_context
 
-    async with stealth_context(str(user_data_dir) if user_data_dir is not None else None) as context:
-        page = await context.new_page()
+    async def _extract_from_context(active_context: "BrowserContext") -> str:
+        page = await active_context.new_page()
         await block_heavy_resources(page)
         try:
             response = await page.goto(url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
@@ -76,11 +82,19 @@ async def extract_job_markdown(
             await human_mouse_jitter(page)
             main = page.locator(UPWORK_MAIN)
             await main.wait_for(state="visible", timeout=NAV_TIMEOUT_MS)
-            text = await main.inner_text(timeout=NAV_TIMEOUT_MS)
+            return await main.inner_text(timeout=NAV_TIMEOUT_MS)
         except PlaywrightTimeoutError as exc:
             raise RuntimeError(f"Timed out extracting Upwork job detail: {url}") from exc
         finally:
             await page.close()
+
+    if context is not None:
+        text = await _extract_from_context(context)
+        return JobMarkdown(upwork_id=upwork_id, url=url, markdown=text_to_markdown(text))
+
+    selected_user_data_dir = user_data_dir or get_settings().upwork_session_dir
+    async with stealth_context(str(selected_user_data_dir)) as owned_context:
+        text = await _extract_from_context(owned_context)
     return JobMarkdown(upwork_id=upwork_id, url=url, markdown=text_to_markdown(text))
 
 

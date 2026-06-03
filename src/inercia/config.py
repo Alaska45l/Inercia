@@ -42,6 +42,7 @@ class Settings:
     db_path: Path
     daily_proposal_cap: int
     ws_port: int
+    login_debug_port: int
     floor_hourly_rate: float
     floor_fixed_rate: float
     allow_upwork_network: bool
@@ -102,6 +103,7 @@ DEFAULT_SETTING_VALUES: dict[str, str] = {
     "DB_PATH": "inercia.db",
     "DAILY_PROPOSAL_CAP": "12",
     "WS_PORT": "9741",
+    "LOGIN_DEBUG_PORT": "9742",
     "FLOOR_HOURLY_RATE": "35",
     "FLOOR_FIXED_RATE": "50",
     "ALLOW_UPWORK_NETWORK": "false",
@@ -253,6 +255,18 @@ def get_settings(env_path: Optional[Path] = None, db_path: Optional[Path] = None
         return _get_value(name, env_file_values, session_values, DEFAULT_SETTING_VALUES[name])
 
     search_filters = _parse_search_filters(value("upwork_search_filters"))
+    scheduler_interval_min_minutes = _parse_int(
+        "SCHEDULER_INTERVAL_MIN_MINUTES",
+        value("SCHEDULER_INTERVAL_MIN_MINUTES"),
+        1,
+    )
+    scheduler_interval_max_minutes = _parse_int(
+        "SCHEDULER_INTERVAL_MAX_MINUTES",
+        value("SCHEDULER_INTERVAL_MAX_MINUTES"),
+        1,
+    )
+    if scheduler_interval_min_minutes > scheduler_interval_max_minutes:
+        scheduler_interval_max_minutes = scheduler_interval_min_minutes
 
     return Settings(
         gemini_api_key=value("GEMINI_API_KEY"),
@@ -268,6 +282,7 @@ def get_settings(env_path: Optional[Path] = None, db_path: Optional[Path] = None
             1,
         ),
         ws_port=_parse_int("WS_PORT", value("WS_PORT"), 1),
+        login_debug_port=_parse_int("LOGIN_DEBUG_PORT", value("LOGIN_DEBUG_PORT"), 1),
         floor_hourly_rate=_parse_float(
             "FLOOR_HOURLY_RATE",
             value("FLOOR_HOURLY_RATE"),
@@ -282,16 +297,8 @@ def get_settings(env_path: Optional[Path] = None, db_path: Optional[Path] = None
             "ALLOW_UPWORK_NETWORK",
             value("ALLOW_UPWORK_NETWORK"),
         ),
-        scheduler_interval_min_minutes=_parse_int(
-            "SCHEDULER_INTERVAL_MIN_MINUTES",
-            value("SCHEDULER_INTERVAL_MIN_MINUTES"),
-            1,
-        ),
-        scheduler_interval_max_minutes=_parse_int(
-            "SCHEDULER_INTERVAL_MAX_MINUTES",
-            value("SCHEDULER_INTERVAL_MAX_MINUTES"),
-            1,
-        ),
+        scheduler_interval_min_minutes=scheduler_interval_min_minutes,
+        scheduler_interval_max_minutes=scheduler_interval_max_minutes,
         blacklist_keywords=_parse_string_list(
             "blacklist_keywords",
             value("blacklist_keywords"),
@@ -305,7 +312,15 @@ def get_settings(env_path: Optional[Path] = None, db_path: Optional[Path] = None
     )
 
 
-settings = get_settings()
+class _LazySettings:
+    def __getattr__(self, name: str) -> Any:
+        return getattr(get_settings(), name)
+
+    def __repr__(self) -> str:
+        return repr(get_settings())
+
+
+settings = _LazySettings()
 
 __all__ = [
     "DEFAULT_BLACKLIST_KEYWORDS",

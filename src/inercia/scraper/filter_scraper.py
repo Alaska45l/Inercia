@@ -26,6 +26,7 @@ from inercia.scraper.selectors import (
     UPWORK_JOB_CARD_TITLE_LINK,
     UPWORK_LABEL_BY_TEXT,
     UPWORK_PAYMENT_VERIFIED_LABEL,
+    UPWORK_SEARCH_INPUT,
     UPWORK_SEARCH_RESULTS_READY,
     UPWORK_SORT_LABEL,
 )
@@ -45,6 +46,7 @@ class FilteredJobCard:
     description: str
     posted_age_text: str
     connects_required: int
+    job_type: str = "hourly"
 
 
 def _safe_text_selector(template: str, text: str) -> str:
@@ -187,6 +189,13 @@ def _extract_connects(text: str) -> int:
     return int(match.group(1))
 
 
+def _extract_job_type(text: str) -> str:
+    lowered = text.lower()
+    if "fixed-price" in lowered or "fixed price" in lowered:
+        return "fixed"
+    return "hourly"
+
+
 def _absolute_upwork_url(href: str) -> str:
     return urllib.parse.urljoin("https://www.upwork.com", href)
 
@@ -224,10 +233,26 @@ async def _card_to_job(card: object) -> Optional[FilteredJobCard]:
         description=description,
         posted_age_text=posted_age_text,
         connects_required=_extract_connects(text),
+        job_type=_extract_job_type(text),
     )
 
 
+async def _submit_search_query(page: object, query: str) -> None:
+    cleaned_query = query.strip()
+    if not cleaned_query:
+        return
+    search_inputs = page.locator(UPWORK_SEARCH_INPUT)
+    if await search_inputs.count() == 0:
+        logger.warning("Upwork search input not found; configured filters will run without query=%s", cleaned_query)
+        return
+    search_input = search_inputs.first
+    await search_input.fill(cleaned_query, timeout=2_500)
+    await search_input.press("Enter", timeout=2_500)
+    await asyncio.sleep(1.0)
+
+
 async def discover_filtered_jobs(
+    query: str = "",
     db_path: Optional[Path] = None,
     user_data_dir: Optional[Path] = None,
     filters: Optional[UpworkSearchFilters] = None,
@@ -247,6 +272,7 @@ async def discover_filtered_jobs(
         if response is not None and response.status >= 400:
             raise RuntimeError(f"Upwork returned HTTP {response.status} for {UPWORK_FIND_WORK_URL}")
         await human_mouse_jitter(page)
+        await _submit_search_query(page, query)
         await _apply_required_filters(page)
         await _apply_configured_filters(page, selected_filters)
         await page.wait_for_selector(UPWORK_SEARCH_RESULTS_READY, timeout=NAV_TIMEOUT_MS)

@@ -1,5 +1,21 @@
 import { derived, get, writable } from 'svelte/store';
 
+declare global {
+  interface ImportMeta {
+    env: {
+      VITE_WS_PORT?: string;
+    };
+  }
+
+  interface Window {
+    __INERCIA_WS_PORT__?: string | number;
+    __TAURI__?: {
+      inerciaWsPort?: string | number;
+      wsPort?: string | number;
+    };
+  }
+}
+
 export type ProposalStatus = 'pending' | 'approved' | 'rejected' | 'submitted';
 export type FilterMode = 'all' | ProposalStatus;
 export type Panel = 'proposals' | 'scraper' | 'jobs' | 'settings';
@@ -73,6 +89,7 @@ export interface SettingsState {
   db_path: string;
   upwork_session_dir: string;
   ws_port: number;
+  login_debug_port: number;
   has_gemini_key: boolean;
   has_opencode_key: boolean;
   scheduler_interval_min_minutes: number;
@@ -98,6 +115,7 @@ type ServerMessage =
   | { type: 'connects_balance'; data: ConnectsBalance }
   | { type: 'user_approved_ack'; data: { proposal_id: number } }
   | { type: 'user_rejected_ack'; data: { proposal_id: number } }
+  | { type: 'confirm_submitted_ack'; data: { proposal_id: number } }
   | { type: 'scrape_progress'; data: { phase: string; queued: number; processed: number; failed: number } }
   | { type: 'scrape_done'; data: { query: string; queued: number; processed: number; inserted: number; failed: number } }
   | { type: 'scrape_error'; data: { message: string; query: string; source: string } }
@@ -237,11 +255,15 @@ function handleMessage(message: ServerMessage): void {
     return;
   }
   if (message.type === 'user_approved_ack') {
-    updateProposal(message.data.proposal_id, { status: 'submitted' });
+    updateProposal(message.data.proposal_id, { status: 'approved' });
     return;
   }
   if (message.type === 'user_rejected_ack') {
     updateProposal(message.data.proposal_id, { status: 'rejected' });
+    return;
+  }
+  if (message.type === 'confirm_submitted_ack') {
+    updateProposal(message.data.proposal_id, { status: 'submitted' });
     return;
   }
   if (message.type === 'scrape_progress') {
@@ -327,8 +349,18 @@ function handleMessage(message: ServerMessage): void {
 let socket: WebSocket | null = null;
 let reconnectTimer: number | null = null;
 let initialLoadComplete = false;
+let reconnectDelayMs = 2000;
 
-export function connectProposalsSocket(url = 'ws://127.0.0.1:9741'): void {
+function configuredWsPort(): string {
+  const tauriPort = window.__TAURI__?.inerciaWsPort ?? window.__TAURI__?.wsPort ?? window.__INERCIA_WS_PORT__;
+  return String(tauriPort ?? import.meta.env.VITE_WS_PORT ?? '9741');
+}
+
+function defaultWsUrl(): string {
+  return `ws://127.0.0.1:${configuredWsPort()}`;
+}
+
+export function connectProposalsSocket(url = defaultWsUrl()): void {
   if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
     return;
   }
@@ -338,6 +370,7 @@ export function connectProposalsSocket(url = 'ws://127.0.0.1:9741'): void {
     connectionState.set('connected');
     lastError.set('');
     initialLoadComplete = false;
+    reconnectDelayMs = 2000;
   });
   socket.addEventListener('message', (event) => {
     try {
@@ -347,13 +380,17 @@ export function connectProposalsSocket(url = 'ws://127.0.0.1:9741'): void {
     }
   });
   socket.addEventListener('close', () => {
+    socket = null;
     connectionState.set('offline');
     scrapeRunning.set(false);
+    processRunning.set(false);
     clearScrapeTimeout();
     if (reconnectTimer !== null) {
       window.clearTimeout(reconnectTimer);
     }
-    reconnectTimer = window.setTimeout(() => connectProposalsSocket(url), 1800);
+    const delay = reconnectDelayMs;
+    reconnectDelayMs = Math.min(reconnectDelayMs * 2, 30_000);
+    reconnectTimer = window.setTimeout(() => connectProposalsSocket(defaultWsUrl()), delay);
   });
   socket.addEventListener('error', () => {
     lastError.set('WebSocket connection failed');
@@ -370,13 +407,16 @@ function sendMessage(payload: object): boolean {
 }
 
 export function approveProposal(proposalId: number): void {
-  updateProposal(proposalId, { status: 'approved' });
-  sendMessage({ type: 'user_approved', proposal_id: proposalId });
+  const proposal = currentProposal(proposalId);
+  if (sendMessage({ type: 'user_approved', proposal_id: proposalId, cover_letter: proposal?.cover_letter })) {
+    updateProposal(proposalId, { status: 'approved' });
+  }
 }
 
 export function rejectProposal(proposalId: number, reason: string | null = null): void {
-  updateProposal(proposalId, { status: 'rejected' });
-  sendMessage({ type: 'user_rejected', proposal_id: proposalId, reason });
+  if (sendMessage({ type: 'user_rejected', proposal_id: proposalId, reason })) {
+    updateProposal(proposalId, { status: 'rejected' });
+  }
 }
 
 export function saveEditedLetter(proposalId: number, coverLetter: string): void {
@@ -401,7 +441,9 @@ export function runConfiguredScrape(): void {
 
 export function runProcess(limit: number): void {
   processRunning.set(true);
-  sendMessage({ type: 'run_process', limit });
+  if (!sendMessage({ type: 'run_process', limit })) {
+    processRunning.set(false);
+  }
 }
 
 export function openUpworkLogin(): void {
@@ -445,11 +487,16 @@ export function updateConnectsTotal(total: number): void {
   sendMessage({ type: 'set_connects_total', total });
 }
 
+export function confirmSubmitted(proposalId: number): void {
+  sendMessage({ type: 'confirm_submitted', proposal_id: proposalId });
+}
+
 export const proposalCounts = derived(proposals, ($proposals) => ({
   all: $proposals.length,
   pending: $proposals.filter((proposal) => proposal.status === 'pending').length,
   approved: $proposals.filter((proposal) => proposal.status === 'approved').length,
-  rejected: $proposals.filter((proposal) => proposal.status === 'rejected').length
+  rejected: $proposals.filter((proposal) => proposal.status === 'rejected').length,
+  submitted: $proposals.filter((proposal) => proposal.status === 'submitted').length
 }));
 
 export function currentProposal(proposalId: number): Proposal | undefined {

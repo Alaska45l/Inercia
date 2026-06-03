@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import sqlite3
 from pathlib import Path
@@ -63,38 +64,33 @@ async def _extractor_node(state: PipelineState) -> PipelineState:
         fallback_title=state.get("fallback_title", ""),
         fallback_description=state.get("fallback_description", ""),
     )
-    state["job_detail"] = detail
-    return state
+    return {**state, "job_detail": detail}
 
 
 async def _investor_node(state: PipelineState) -> PipelineState:
     roi = score_job(state["job_detail"], db_path=state.get("db_path"))
-    state["roi_score"] = roi
-    state["status"] = "scored" if roi.passed else "blacklisted"
-    return state
+    return {**state, "roi_score": roi, "status": "scored" if roi.passed else "blacklisted"}
 
 
 async def _copywriter_node(state: PipelineState) -> PipelineState:
     attempts = int(state.get("copywriter_attempts", 0)) + 1
-    state["copywriter_attempts"] = attempts
-    state["cover_letter"] = await write_cover_letter(
+    cover_letter = await write_cover_letter(
         job_detail=state["job_detail"],
         critic_issues=state.get("critic_issues"),
     )
-    return state
+    return {**state, "copywriter_attempts": attempts, "cover_letter": cover_letter}
 
 
 async def _critic_node(state: PipelineState) -> PipelineState:
     review = await review_cover_letter(state["cover_letter"], state["job_detail"])
-    state["critic_review"] = review
-    state["critic_issues"] = review.issues
     attempts = int(state.get("copywriter_attempts", 0))
+    next_state: PipelineState = {**state, "critic_review": review, "critic_issues": review.issues}
     if review.approved or attempts >= MAX_COPYWRITER_ATTEMPTS:
-        _attach_proposal_package(state)
-    return state
+        return _attach_proposal_package(next_state)
+    return next_state
 
 
-def _attach_proposal_package(state: PipelineState) -> None:
+def _attach_proposal_package(state: PipelineState) -> PipelineState:
     job_detail = state["job_detail"]
     roi_score = state["roi_score"]
     package = ProposalPackage(
@@ -106,8 +102,7 @@ def _attach_proposal_package(state: PipelineState) -> None:
         bid_type=job_detail.job_type,
         connects_cost=job_detail.connects_required,
     )
-    state["proposal_package"] = package
-    state["status"] = "ready"
+    return {**state, "proposal_package": package, "status": "ready"}
 
 
 def _route_after_investor(state: PipelineState) -> str:
@@ -122,6 +117,7 @@ def _route_after_critic(state: PipelineState) -> str:
     return "done"
 
 
+@functools.lru_cache(maxsize=1)
 def build_graph() -> Any:
     try:
         from langgraph.graph import END, StateGraph
@@ -225,7 +221,7 @@ async def _save_pipeline_result(row: sqlite3.Row, state: PipelineState, db_path:
 
 
 async def process_unprocessed_jobs(limit: int = 20, db_path: Optional[Path] = None) -> dict[str, object]:
-    settings = get_settings()
+    settings = get_settings(db_path=db_path)
     cap = settings.daily_proposal_cap
     submitted_today = await asyncio.to_thread(count_submitted_today, db_path)
     if submitted_today >= cap:

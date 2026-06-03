@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onDestroy, onMount } from 'svelte';
   import {
     lastScrapeError,
     lastScrapeResult,
@@ -9,8 +10,26 @@
     stopScheduler
   } from '../stores/proposals';
 
-  $: minutes = Math.floor($schedulerStatus.next_run_in_seconds / 60);
-  $: seconds = String($schedulerStatus.next_run_in_seconds % 60).padStart(2, '0');
+  let displayedSeconds = 0;
+  let countdownTimer: number | null = null;
+
+  $: displayedSeconds = $schedulerStatus.running ? $schedulerStatus.next_run_in_seconds : 0;
+  $: minutes = Math.floor(displayedSeconds / 60);
+  $: seconds = String(displayedSeconds % 60).padStart(2, '0');
+
+  onMount(() => {
+    countdownTimer = window.setInterval(() => {
+      if ($schedulerStatus.running && displayedSeconds > 0) {
+        displayedSeconds -= 1;
+      }
+    }, 1000);
+  });
+
+  onDestroy(() => {
+    if (countdownTimer !== null) {
+      window.clearInterval(countdownTimer);
+    }
+  });
 
   function submitScrape(): void {
     runConfiguredScrape();

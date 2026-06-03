@@ -8,7 +8,7 @@
 
   $: country = proposal.client_country || 'Unknown';
   $: rateLabel = proposal.bid_type === 'hourly' ? `$${proposal.bid_rate.toFixed(0)}/hr` : `$${proposal.bid_rate.toFixed(0)}`;
-  $: statusLocked = proposal.status !== 'pending';
+  $: statusLocked = proposal.status === 'rejected' || proposal.status === 'submitted';
 </script>
 
 <article
@@ -16,6 +16,7 @@
   class:pending={proposal.status === 'pending'}
   class:approved={proposal.status === 'approved'}
   class:rejected={proposal.status === 'rejected'}
+  class:submitted={proposal.status === 'submitted'}
 >
   <header class="proposal-head">
     <div>
@@ -57,5 +58,10 @@
     </dl>
   {/if}
 
-  <ApprovalBar proposalId={proposal.proposal_id} coverLetter={proposal.cover_letter} disabled={statusLocked} />
+  <ApprovalBar
+    proposalId={proposal.proposal_id}
+    coverLetter={proposal.cover_letter}
+    status={proposal.status}
+    disabled={statusLocked}
+  />
 </article>

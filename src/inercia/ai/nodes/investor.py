@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Optional
 
 from inercia.ai.schemas import JobDetail, ROIScore
-from inercia.config import DEFAULT_BLACKLIST_KEYWORDS
+from inercia.config import DEFAULT_BLACKLIST_KEYWORDS, get_settings
 from inercia.cv.profiles import get_upwork_profile
 from inercia.db.manager import get_blacklist_keywords
 
@@ -39,6 +39,7 @@ def _contains_blacklist(job_detail: JobDetail, db_path: Optional[Path] = None) -
 
 
 def score_job(job_detail: JobDetail, db_path: Optional[Path] = None) -> ROIScore:
+    settings = get_settings(db_path=db_path)
     my_skills = _profile_skills()
     job_skills = _job_skills(job_detail)
     union = job_skills.union(my_skills)
@@ -57,10 +58,10 @@ def score_job(job_detail: JobDetail, db_path: Optional[Path] = None) -> ROIScore
         roi = -100
         reasons.append("blacklist_keyword")
 
-    if job_detail.job_type == "fixed" and (job_detail.budget_max or 0) < 50:
+    if job_detail.job_type == "fixed" and (job_detail.budget_max or 0) < settings.floor_fixed_rate:
         roi -= 50
         reasons.append("fixed_budget_below_floor")
-    if job_detail.job_type == "hourly" and (job_detail.hourly_rate_max or 0) < 15:
+    if job_detail.job_type == "hourly" and (job_detail.hourly_rate_max or 0) < settings.floor_hourly_rate:
         roi -= 50
         reasons.append("hourly_rate_below_floor")
 

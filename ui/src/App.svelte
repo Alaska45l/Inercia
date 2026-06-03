@@ -37,70 +37,83 @@
     if (panel === 'jobs') requestJobs();
     if (panel === 'settings') requestSettings();
   }
+
+  function reloadApp(): void {
+    window.location.reload();
+  }
 </script>
 
-<main class="app-shell">
-  <aside class="sidebar">
-    <div class="brand-block">
-      <h1>INERCIA</h1>
-      <span
-        class="connection-dot"
-        class:connected={$connectionState === 'connected'}
-        aria-label={`Connection ${$connectionState}`}
-        title={$connectionState}
-      ></span>
-    </div>
+<svelte:boundary>
+  <main class="app-shell">
+    <aside class="sidebar">
+      <div class="brand-block">
+        <h1>INERCIA</h1>
+        <span
+          class="connection-dot"
+          class:connected={$connectionState === 'connected'}
+          aria-label={`Connection ${$connectionState}`}
+          title={$connectionState}
+        ></span>
+      </div>
 
-    <ConnectsTracker balance={$connects} />
-    <StatsPanel stats={$stats} />
-  </aside>
+      <ConnectsTracker balance={$connects} />
+      <StatsPanel stats={$stats} />
+    </aside>
 
-  <section class="workspace">
-    <nav class="panel-tabs" aria-label="Workspace panels">
-      {#each tabs as tab}
-        <button
-          type="button"
-          class:active={$activePanel === tab.value}
-          on:click={() => switchPanel(tab.value)}
-        >
-          {tab.label}
-        </button>
-      {/each}
-    </nav>
+    <section class="workspace">
+      <nav class="panel-tabs" aria-label="Workspace panels">
+        {#each tabs as tab}
+          <button
+            type="button"
+            class:active={$activePanel === tab.value}
+            on:click={() => switchPanel(tab.value)}
+          >
+            {tab.label}
+          </button>
+        {/each}
+      </nav>
 
-    {#if $lastError}
-      <div class="error-line">{$lastError}</div>
-    {/if}
+      {#if $lastError}
+        <div class="error-line">{$lastError}</div>
+      {/if}
 
-    {#if $activePanel === 'proposals'}
-      <header class="topbar">
-        <div>
-          <p class="eyebrow">Proposal queue</p>
-          <h2>Human approval</h2>
-        </div>
-        <FilterChips />
-      </header>
-
-      <div class="proposal-grid">
-        {#if $filteredProposals.length === 0}
-          <div class="empty-state">
-            <p>No proposals.</p>
+      {#if $activePanel === 'proposals'}
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">Proposal queue</p>
+            <h2>Human approval</h2>
           </div>
-        {:else}
-          {#each $filteredProposals as proposal (proposal.proposal_id)}
-            <ProposalCard {proposal} />
-          {/each}
-        {/if}
-      </div>
-    {:else if $activePanel === 'scraper'}
-      <div class="panel-stack">
-        <ScraperPanel />
-        <LoginPanel />
-      </div>
-    {:else if $activePanel === 'jobs'}
-      <JobsTable />
-    {:else if $activePanel === 'settings'}
-      <SettingsPanel />
-    {/if}
-  </section>
-</main>
+          <FilterChips />
+        </header>
+
+        <div class="proposal-grid">
+          {#if $filteredProposals.length === 0}
+            <div class="empty-state">
+              <p>No proposals.</p>
+            </div>
+          {:else}
+            {#each $filteredProposals as proposal (proposal.proposal_id)}
+              <ProposalCard {proposal} />
+            {/each}
+          {/if}
+        </div>
+      {:else if $activePanel === 'scraper'}
+        <div class="panel-stack">
+          <ScraperPanel />
+          <LoginPanel />
+        </div>
+      {:else if $activePanel === 'jobs'}
+        <JobsTable />
+      {:else if $activePanel === 'settings'}
+        <SettingsPanel />
+      {/if}
+    </section>
+  </main>
+
+  {#snippet failed(error)}
+    <div class="error-boundary">
+      <p>{error instanceof Error ? error.message : 'Inercia UI failed to render.'}</p>
+      <button type="button" on:click={reloadApp}>Reload</button>
+    </div>
+  {/snippet}
+</svelte:boundary>

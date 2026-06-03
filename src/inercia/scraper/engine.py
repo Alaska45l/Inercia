@@ -91,7 +91,8 @@ async def create_context(playwright: "Playwright", user_data_dir: Optional[str] 
 
 async def block_heavy_resources(page: "Page") -> None:
     async def _interceptor(route: Any, request: Any) -> None:
-        if request.resource_type in BLOCKED_RESOURCE_TYPES:
+        resource_type = request.resource_type
+        if resource_type in BLOCKED_RESOURCE_TYPES:
             await route.abort()
             return
         await route.continue_()

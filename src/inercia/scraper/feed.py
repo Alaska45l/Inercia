@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import random
 import urllib.parse
 import urllib.error
 import urllib.request
@@ -101,7 +100,7 @@ def _download_feed(query: str, timeout: float) -> str:
     url = build_feed_url(query)
     request = urllib.request.Request(
         url,
-        headers={"User-Agent": random.choice(USER_AGENTS)},
+        headers={"User-Agent": USER_AGENTS[0]},
     )
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:

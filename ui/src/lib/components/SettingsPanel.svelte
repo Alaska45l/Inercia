@@ -28,6 +28,7 @@
 
   function blurSetting(event: FocusEvent, key: string): void {
     const input = event.currentTarget as HTMLInputElement;
+    if ((key === 'GEMINI_API_KEY' || key === 'OPENCODE_API_KEY') && input.value.trim() === '') return;
     setSetting(key, input.value);
   }
 
@@ -126,12 +127,12 @@
       <h3 class="settings-heading">Runtime</h3>
       <div class="setting-row">
         <label for="gemini-key">GEMINI API KEY</label>
-        <input id="gemini-key" class="control-input" type="password" value={$settingsState.gemini_api_key} on:blur={(event) => blurSetting(event, 'GEMINI_API_KEY')} />
+        <input id="gemini-key" class="control-input" type="password" value="" placeholder={$settingsState.has_gemini_key ? 'Stored locally' : ''} on:blur={(event) => blurSetting(event, 'GEMINI_API_KEY')} />
         <span class={$settingsState.has_gemini_key ? 'key-ok' : 'key-err'}>{$settingsState.has_gemini_key ? 'set' : 'missing'}</span>
       </div>
       <div class="setting-row">
         <label for="opencode-key">OPENCODE API KEY</label>
-        <input id="opencode-key" class="control-input" type="password" value={$settingsState.opencode_api_key} on:blur={(event) => blurSetting(event, 'OPENCODE_API_KEY')} />
+        <input id="opencode-key" class="control-input" type="password" value="" placeholder={$settingsState.has_opencode_key ? 'Stored locally' : ''} on:blur={(event) => blurSetting(event, 'OPENCODE_API_KEY')} />
         <span class={$settingsState.has_opencode_key ? 'key-ok' : 'key-err'}>{$settingsState.has_opencode_key ? 'set' : 'missing'}</span>
       </div>
       <div class="setting-row">

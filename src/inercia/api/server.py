@@ -11,7 +11,6 @@ import subprocess
 import sys
 import time
 import urllib.error
-import urllib.parse
 import urllib.request
 from collections.abc import Callable
 from dataclasses import asdict
@@ -36,6 +35,12 @@ from inercia.api.protocol import (
     settings_state,
     stats_update,
 )
+from inercia.applicator.auth import (
+    UpworkAuthStatus,
+    is_upwork_authenticated_url,
+    is_upwork_login_url,
+    verify_upwork_session,
+)
 from inercia.applicator.apply_flow import ApplyPayload, close_apply_session, prepare_application
 from inercia.config import get_settings
 from inercia.db.manager import (
@@ -57,51 +62,9 @@ logger = logging.getLogger("inercia.api.server")
 DEFAULT_CONNECTS_TOTAL: int = 211
 POLL_INTERVAL_S: float = 2.0
 LOGIN_STATUS_POLL_INTERVAL_S: float = 2.0
-LOGIN_AUTH_GRACE_S: float = 10.0
 LOGIN_AUTH_STABILITY_S: float = LOGIN_STATUS_POLL_INTERVAL_S * 2
 LOGIN_PROFILE_FLUSH_GRACE_S: float = 3.0
 SESSION_KEY_CONNECTS_TOTAL: str = "connects_total"
-UPWORK_SESSION_PROBE_URL: str = "https://www.upwork.com/nx/find-work/"
-UPWORK_AUTHENTICATED_URL_PATTERNS: tuple[str, ...] = (
-    "upwork.com/nx/find-work",
-    "upwork.com/ab/find-work",
-    "upwork.com/nx/search",
-    "upwork.com/freelancer/dashboard",
-    "upwork.com/ab/jobs/search",
-    "upwork.com/nx/jobs",
-    "upwork.com/ab/proposals",
-    "upwork.com/nx/proposals",
-    "upwork.com/messages",
-    "upwork.com/freelancers/settings",
-)
-UPWORK_IN_PROGRESS_URL_FRAGMENTS: tuple[str, ...] = (
-    "account-security",
-    "login",
-    "signup",
-    "create-profile",
-    "complete-profile",
-    "google/callback",
-    "apple/callback",
-    "/oauth",
-    "/sso/",
-    "accounts.google.com",
-    "appleid.apple.com",
-)
-UPWORK_SESSION_COOKIE_NAMES: frozenset[str] = frozenset(
-    {
-        "oauth2_global_js_token",
-        "XSRF-TOKEN",
-        "visitor_id",
-    }
-)
-UPWORK_LOGIN_RESPONSE_MARKERS: tuple[str, ...] = (
-    "account-security/login",
-    "/login",
-    "log in to upwork",
-    "sign in to upwork",
-    "login with",
-    "please log in",
-)
 HandlerAfterSend = Optional[Callable[[], None]]
 HandlerResult = tuple[dict[str, Any], HandlerAfterSend]
 _login_process: Optional[subprocess.Popen[Any]] = None
@@ -160,8 +123,8 @@ def _bool_from_override(value: str, fallback: bool) -> bool:
 def _settings_payload(db_path: Optional[Path]) -> dict[str, Any]:
     settings = get_settings(db_path=db_path)
     return {
-        "gemini_api_key": settings.gemini_api_key,
-        "opencode_api_key": settings.opencode_api_key,
+        "gemini_api_key": "",
+        "opencode_api_key": "",
         "opencode_base_url": settings.opencode_base_url,
         "opencode_copywriter_model": settings.opencode_copywriter_model,
         "opencode_user_agent": settings.opencode_user_agent,
@@ -248,11 +211,10 @@ def _login_status_from_debug(profile_dir: Path, debug_port: int) -> dict[str, An
         if not url or url.startswith("devtools://"):
             continue
         current_url = url
-        lowered = url.lower()
-        if any(fragment in lowered for fragment in UPWORK_IN_PROGRESS_URL_FRAGMENTS):
+        if is_upwork_login_url(url):
             message = "Waiting for login..."
             continue
-        if any(pattern in lowered for pattern in UPWORK_AUTHENTICATED_URL_PATTERNS):
+        if is_upwork_authenticated_url(url):
             authenticated = True
             message = "Login detected. Confirming session..."
             break
@@ -264,125 +226,21 @@ def _login_status_from_debug(profile_dir: Path, debug_port: int) -> dict[str, An
     }
 
 
-def _chrome_cookie_now() -> int:
-    return int((time.time() + 11_644_473_600) * 1_000_000)
-
-
-def _upwork_cookie_session_status(profile_dir: Path) -> tuple[bool, str]:
-    cookies_path = profile_dir / "Default" / "Cookies"
-    if not cookies_path.exists():
-        return False, "No stored Upwork session cookies found"
-    quoted_path = urllib.parse.quote(str(cookies_path), safe="/:")
-    cookie_names = tuple(UPWORK_SESSION_COOKIE_NAMES)
-    placeholders = ", ".join("?" for _ in cookie_names)
-    sql = f"""
-        SELECT
-          COUNT(*) AS upwork_count,
-          SUM(
-            CASE
-              WHEN name IN ({placeholders})
-                OR lower(name) LIKE '%oauth%'
-                OR lower(name) LIKE '%token%'
-                OR lower(name) LIKE '%session%'
-              THEN 1
-              ELSE 0
-            END
-          ) AS session_count
-        FROM cookies
-        WHERE (host_key = ? OR host_key LIKE ?)
-          AND (expires_utc = 0 OR expires_utc > ?)
-    """
-    try:
-        with sqlite3.connect(f"file:{quoted_path}?mode=ro", uri=True, timeout=1.0) as conn:
-            row = conn.execute(sql, (*cookie_names, "upwork.com", "%.upwork.com", _chrome_cookie_now())).fetchone()
-    except sqlite3.Error as exc:
-        logger.warning("Could not read Upwork cookie store: %s", exc)
-        return False, "Could not read stored Upwork session cookies"
-    upwork_count = int(row[0]) if row is not None and row[0] is not None else 0
-    session_count = int(row[1]) if row is not None and row[1] is not None else 0
-    if session_count > 0:
-        return True, "Stored Upwork session cookies found"
-    if upwork_count > 0:
-        return True, "Stored Upwork cookies found"
-    return False, "No stored Upwork session cookies found"
-
-
-def _read_upwork_cookie_header(profile_dir: Path) -> tuple[Optional[str], str]:
-    cookies_path = profile_dir / "Default" / "Cookies"
-    if not cookies_path.exists():
-        return None, "No stored Upwork session cookies found"
-    quoted_path = urllib.parse.quote(str(cookies_path), safe="/:")
-    sql = """
-        SELECT name, value
-        FROM cookies
-        WHERE (host_key = ? OR host_key LIKE ?)
-          AND (expires_utc = 0 OR expires_utc > ?)
-          AND value != ''
-        ORDER BY name;
-    """
-    try:
-        with sqlite3.connect(f"file:{quoted_path}?mode=ro", uri=True, timeout=1.0) as conn:
-            rows = conn.execute(sql, ("upwork.com", "%.upwork.com", _chrome_cookie_now())).fetchall()
-    except sqlite3.Error as exc:
-        logger.warning("Could not read Upwork cookie store for HTTP probe: %s", exc)
-        return None, "Could not read stored Upwork session cookies"
-    cookies = [
-        f"{urllib.parse.quote(str(name), safe='')}={urllib.parse.quote(str(value), safe='')}"
-        for name, value in rows
-        if str(name) and str(value)
-    ]
-    if not cookies:
-        return None, "No readable Upwork session cookies found"
-    return "; ".join(cookies), "Readable Upwork session cookies found"
-
-
-def _verify_upwork_http_session(profile_dir: Path) -> tuple[bool, str]:
-    cookie_header, cookie_message = _read_upwork_cookie_header(profile_dir)
-    if cookie_header is None:
-        return False, cookie_message
-    request = urllib.request.Request(
-        UPWORK_SESSION_PROBE_URL,
-        headers={
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Cookie": cookie_header,
-            "User-Agent": (
-                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-            ),
-        },
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=8.0) as response:
-            status = int(response.status)
-            final_url = response.geturl().lower()
-            body = response.read(128_000).decode("utf-8", errors="replace").lower()
-    except urllib.error.HTTPError as exc:
-        return False, f"Upwork session probe returned HTTP {exc.code}"
-    except (OSError, urllib.error.URLError) as exc:
-        return False, f"Upwork session probe failed: {exc}"
-    if status != 200:
-        return False, f"Upwork session probe returned HTTP {status}"
-    if any(marker in final_url or marker in body for marker in UPWORK_LOGIN_RESPONSE_MARKERS):
-        return False, "Upwork session probe reached a login page"
-    return True, "Upwork session verified"
-
-
-def _cookie_login_status_payload(profile_dir: Path) -> dict[str, Any]:
-    authenticated, message = _upwork_cookie_session_status(profile_dir)
+def _auth_status_payload(status: UpworkAuthStatus, browser_open: bool = False) -> dict[str, Any]:
     return {
-        "browser_open": False,
-        "authenticated": authenticated,
-        "message": message,
-        "current_url": "",
+        "browser_open": browser_open,
+        "authenticated": status.authenticated,
+        "message": status.message,
+        "current_url": status.current_url,
     }
 
 
-def _login_status_payload(db_path: Optional[Path]) -> dict[str, Any]:
+async def _login_status_payload(db_path: Optional[Path]) -> dict[str, Any]:
     settings = get_settings(db_path=db_path)
     profile_dir = _login_profile_dir or settings.upwork_session_dir
-    if not _login_browser_pids(profile_dir):
-        return _cookie_login_status_payload(settings.upwork_session_dir)
-    return _login_status_from_debug(profile_dir, settings.login_debug_port)
+    if _login_browser_pids(profile_dir):
+        return _login_status_from_debug(profile_dir, settings.login_debug_port)
+    return _auth_status_payload(await verify_upwork_session(settings.upwork_session_dir))
 
 
 def _scheduler_status_payload() -> dict[str, Any]:
@@ -502,38 +360,31 @@ async def _poll_login_status(profile_dir: Path, debug_port: int) -> None:
                     _set_login_status_state(status)
                     await asyncio.sleep(LOGIN_STATUS_POLL_INTERVAL_S)
                     continue
-                status["message"] = "Login detected. Verifying session cookies..."
-                _set_login_status_state(status)
-                await asyncio.sleep(LOGIN_AUTH_GRACE_S)
-                verified, message = await asyncio.to_thread(_verify_upwork_http_session, profile_dir)
-                if verified:
-                    status["message"] = "Login confirmed. Closing browser..."
-                    _set_login_status_state(status)
-                    await _close_login_browser_process(profile_dir)
-                    _login_auth_confirmed_at = 0.0
-                    _login_auth_confirmed_url = ""
-                    _set_login_status_state(
-                        {
-                            "browser_open": False,
-                            "authenticated": True,
-                            "message": "Session confirmed ✓",
-                            "current_url": "",
-                        }
-                    )
-                    return
-                _login_auth_confirmed_at = 0.0
-                _login_auth_confirmed_url = ""
-                status["authenticated"] = False
-                status["message"] = f"{message}. Continue login in the browser..."
+                status["message"] = "Login detected. Close the browser after Find Work finishes loading."
                 _set_login_status_state(status)
                 await asyncio.sleep(LOGIN_STATUS_POLL_INTERVAL_S)
                 continue
-            _login_auth_confirmed_at = 0.0
-            _login_auth_confirmed_url = ""
             if not status["browser_open"]:
+                saw_authenticated_page = _login_auth_confirmed_at > 0 or bool(_login_auth_confirmed_url)
                 await asyncio.sleep(LOGIN_PROFILE_FLUSH_GRACE_S)
                 _login_process = None
                 _login_profile_dir = None
+                if saw_authenticated_page:
+                    verified_status = await verify_upwork_session(profile_dir)
+                    _set_login_status_state(
+                        _auth_status_payload(
+                            UpworkAuthStatus(
+                                authenticated=verified_status.authenticated,
+                                message=(
+                                    "Session confirmed"
+                                    if verified_status.authenticated
+                                    else f"{verified_status.message}. Reopen login and try again."
+                                ),
+                                current_url=verified_status.current_url,
+                            )
+                        )
+                    )
+                    return
                 _set_login_status_state(
                     {
                         "browser_open": False,
@@ -543,6 +394,8 @@ async def _poll_login_status(profile_dir: Path, debug_port: int) -> None:
                     }
                 )
                 return
+            _login_auth_confirmed_at = 0.0
+            _login_auth_confirmed_url = ""
             _set_login_status_state(status)
             await asyncio.sleep(LOGIN_STATUS_POLL_INTERVAL_S)
     except asyncio.CancelledError:
@@ -661,7 +514,7 @@ async def _send_initial_state(websocket: Any, db_path: Optional[Path]) -> None:
     for proposal in ready:
         await _send_json(websocket, proposal_ready(proposal))
     await _send_json(websocket, scheduler_status(_scheduler_status_payload()))
-    current_login_status = _login_status_payload(db_path)
+    current_login_status = await _login_status_payload(db_path)
     if current_login_status["browser_open"] and _login_status_state.get("browser_open"):
         current_login_status = dict(_login_status_state)
     else:
@@ -686,6 +539,11 @@ async def _handle_user_approved(
     user_data_dir = settings.upwork_session_dir
     if _login_browser_pids(user_data_dir):
         return error_message("Finish Upwork login, wait for /nx/find-work/, then close the login browser before approving"), None
+    if settings.allow_upwork_network:
+        session_status = await verify_upwork_session(user_data_dir)
+        if not session_status.authenticated:
+            _set_login_status_state(_auth_status_payload(session_status))
+            return error_message(f"Upwork session is not ready: {session_status.message}"), None
 
     selected_cover_letter = str(row["cover_letter"])
     if cover_letter is not None:
@@ -761,6 +619,13 @@ async def _handle_run_scrape(payload: dict[str, Any], websocket: Any, db_path: O
     async def _run() -> None:
         label = query or "configured filters"
         try:
+            if allow_network:
+                if _login_browser_pids(settings.upwork_session_dir):
+                    raise RuntimeError("Close the Upwork login browser before starting live scraping")
+                session_status = await verify_upwork_session(settings.upwork_session_dir)
+                _set_login_status_state(_auth_status_payload(session_status))
+                if not session_status.authenticated:
+                    raise RuntimeError(f"Upwork session is not ready: {session_status.message}")
             summary = await scrape_query(query=query, db_path=db_path, allow_network=allow_network)
         except asyncio.CancelledError:
             raise
@@ -859,6 +724,8 @@ async def _handle_open_upwork_login(payload: dict[str, Any], websocket: Any, db_
             f"--user-data-dir={profile_dir}",
             f"--remote-debugging-port={settings.login_debug_port}",
             "--remote-debugging-address=127.0.0.1",
+            "--no-first-run",
+            "--no-default-browser-check",
             "--new-window",
             "https://www.upwork.com/ab/account-security/login",
         ],
@@ -916,7 +783,7 @@ async def _handle_check_upwork_session(payload: dict[str, Any], websocket: Any, 
         status = _login_status_from_debug(settings.upwork_session_dir, settings.login_debug_port)
         _set_login_status_state(status)
         return login_status(status), None
-    status = _cookie_login_status_payload(settings.upwork_session_dir)
+    status = _auth_status_payload(await verify_upwork_session(settings.upwork_session_dir))
     _set_login_status_state(status)
     return login_status(status), None
 
@@ -1098,7 +965,13 @@ async def _poll_ready(websocket: Any, db_path: Optional[Path]) -> None:
 
 
 async def _client_handler(websocket: Any, db_path: Optional[Path]) -> None:
-    await _send_initial_state(websocket, db_path)
+    try:
+        await _send_initial_state(websocket, db_path)
+    except Exception as exc:
+        if "ConnectionClosed" in type(exc).__name__:
+            logger.debug("Client disconnected before initial state was sent: %s", exc)
+            return
+        raise
     poller = asyncio.create_task(_poll_ready(websocket, db_path))
     try:
         async for message in websocket:
@@ -1124,14 +997,9 @@ async def serve(db_path: Optional[Path] = None, host: str = "127.0.0.1", port: O
     settings = get_settings(db_path=db_path)
     selected_port = port or settings.ws_port
     await asyncio.to_thread(init_db, db_path or settings.db_path)
-    session_authenticated, session_message = await asyncio.to_thread(
-        _upwork_cookie_session_status,
-        settings.upwork_session_dir,
-    )
     logger.info(
-        "Upwork session cookie status | authenticated=%s | message=%s",
-        session_authenticated,
-        session_message,
+        "Upwork session profile configured | dir=%s",
+        settings.upwork_session_dir,
     )
     async with websocket_serve(lambda websocket: _client_handler(websocket, db_path or settings.db_path), host, selected_port):
         logger.info("WebSocket API listening on ws://%s:%d", host, selected_port)

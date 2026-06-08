@@ -15,7 +15,7 @@
       <span class="blink-dot" aria-hidden="true"></span>
       <span>{$loginStatus.message}</span>
     </div>
-    <p>Browser will auto-close when login is detected.</p>
+    <p>Close the browser after Find Work finishes loading.</p>
   {:else}
     <div class="login-actions">
       <button class="control-button" type="button" on:click={openUpworkLogin}>Open Upwork Login Browser</button>
@@ -24,6 +24,6 @@
     <p class:login-ok={$loginStatus.state === 'confirmed'} class:login-err={$loginStatus.state === 'failed'}>
       {$loginStatus.message}
     </p>
-    <p>A visible Chromium window will open.<br />Login is detected automatically.</p>
+    <p>A visible Chromium window will open.<br />Login is verified after you close it.</p>
   {/if}
 </section>

@@ -70,7 +70,7 @@ async def extract_job_markdown(
 
     from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
-    from inercia.scraper.engine import NAV_TIMEOUT_MS, block_heavy_resources, human_mouse_jitter, stealth_context
+    from inercia.scraper.engine import NAV_TIMEOUT_MS, block_heavy_resources, browser_context
 
     async def _extract_from_context(active_context: "BrowserContext") -> str:
         page = await active_context.new_page()
@@ -79,7 +79,6 @@ async def extract_job_markdown(
             response = await page.goto(url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
             if response is not None and response.status >= 400:
                 raise RuntimeError(f"Upwork returned HTTP {response.status} for {url}")
-            await human_mouse_jitter(page)
             main = page.locator(UPWORK_MAIN)
             await main.wait_for(state="visible", timeout=NAV_TIMEOUT_MS)
             return await main.inner_text(timeout=NAV_TIMEOUT_MS)
@@ -93,7 +92,7 @@ async def extract_job_markdown(
         return JobMarkdown(upwork_id=upwork_id, url=url, markdown=text_to_markdown(text))
 
     selected_user_data_dir = user_data_dir or get_settings().upwork_session_dir
-    async with stealth_context(str(selected_user_data_dir)) as owned_context:
+    async with browser_context(str(selected_user_data_dir)) as owned_context:
         text = await _extract_from_context(owned_context)
     return JobMarkdown(upwork_id=upwork_id, url=url, markdown=text_to_markdown(text))
 

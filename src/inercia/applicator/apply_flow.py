@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Optional
 
 from inercia.applicator.session import UpworkSession, open_persistent_upwork_session
-from inercia.scraper.engine import NAV_TIMEOUT_MS, block_heavy_resources, human_mouse_jitter
+from inercia.scraper.engine import NAV_TIMEOUT_MS, block_heavy_resources
 from inercia.scraper.selectors import (
     UPWORK_ATTACHMENT_INPUT,
     UPWORK_COVER_LETTER,
@@ -172,8 +172,6 @@ async def prepare_application(
         response = await page.goto(payload.apply_url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
         if response is not None and response.status >= 400:
             raise RuntimeError(f"Upwork returned HTTP {response.status} for {payload.apply_url}")
-        await human_mouse_jitter(page)
-
         rate_set = False
         rate_inputs = page.locator(UPWORK_RATE_INPUT)
         if await rate_inputs.count() > 0:

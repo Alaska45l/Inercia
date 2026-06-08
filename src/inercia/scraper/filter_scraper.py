@@ -9,10 +9,11 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
+from inercia.applicator.auth import contains_login_marker, is_upwork_login_url
 from inercia.applicator.session import persistent_upwork_session
 from inercia.config import UpworkSearchFilters, get_settings
-from inercia.db.manager import get_job_by_upwork_id, get_session_value
-from inercia.scraper.engine import NAV_TIMEOUT_MS, block_heavy_resources, human_mouse_jitter
+from inercia.db.manager import get_blacklist_keywords, get_job_by_upwork_id, get_session_value
+from inercia.scraper.engine import NAV_TIMEOUT_MS, block_heavy_resources
 from inercia.scraper.feed import extract_upwork_id
 from inercia.scraper.selectors import (
     UPWORK_BUTTON_BY_TEXT,
@@ -47,6 +48,10 @@ class FilteredJobCard:
     posted_age_text: str
     connects_required: int
     job_type: str = "hourly"
+
+
+class UpworkAuthenticationError(RuntimeError):
+    pass
 
 
 def _safe_text_selector(template: str, text: str) -> str:
@@ -178,8 +183,7 @@ def _is_older_than_max_age(text: str, now: Optional[datetime] = None) -> bool:
     age = _posting_age(text)
     if age is None:
         return False
-    reference = now or datetime.now(timezone.utc)
-    return reference - age < reference - timedelta(days=MAX_JOB_AGE_DAYS)
+    return age > timedelta(days=MAX_JOB_AGE_DAYS)
 
 
 def _extract_connects(text: str) -> int:
@@ -194,6 +198,11 @@ def _extract_job_type(text: str) -> str:
     if "fixed-price" in lowered or "fixed price" in lowered:
         return "fixed"
     return "hourly"
+
+
+def _contains_ignored_keyword(job: FilteredJobCard, ignored_keywords: list[str]) -> bool:
+    haystack = f"{job.title}\n{job.description}".lower()
+    return any(keyword.lower() in haystack for keyword in ignored_keywords)
 
 
 def _absolute_upwork_url(href: str) -> str:
@@ -251,6 +260,18 @@ async def _submit_search_query(page: object, query: str) -> None:
     await asyncio.sleep(1.0)
 
 
+async def _ensure_authenticated_search_page(page: object) -> None:
+    current_url = str(getattr(page, "url", ""))
+    if is_upwork_login_url(current_url):
+        raise UpworkAuthenticationError("Upwork redirected to login; open the login browser and sign in again")
+    try:
+        body_text = await page.locator("body").inner_text(timeout=5_000)
+    except Exception:
+        body_text = ""
+    if contains_login_marker(f"{current_url}\n{body_text}"):
+        raise UpworkAuthenticationError("Upwork search opened a login page; refresh the stored session")
+
+
 async def discover_filtered_jobs(
     query: str = "",
     db_path: Optional[Path] = None,
@@ -261,43 +282,53 @@ async def discover_filtered_jobs(
     selected_filters = filters or settings.upwork_search_filters
     profile_dir = user_data_dir or settings.upwork_session_dir
     last_scraped_upwork_id = get_session_value(LAST_SCRAPED_UPWORK_ID_KEY, db_path)
-    jobs: list[FilteredJobCard] = []
-    seen: set[str] = set()
-    stop_scan = False
+    ignored_keywords = get_blacklist_keywords(db_path)
 
-    async with persistent_upwork_session(user_data_dir=profile_dir, headless=True) as context:
-        page = await context.new_page()
-        await block_heavy_resources(page)
-        response = await page.goto(UPWORK_FIND_WORK_URL, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
-        if response is not None and response.status >= 400:
-            raise RuntimeError(f"Upwork returned HTTP {response.status} for {UPWORK_FIND_WORK_URL}")
-        await human_mouse_jitter(page)
-        await _submit_search_query(page, query)
-        await _apply_required_filters(page)
-        await _apply_configured_filters(page, selected_filters)
-        await page.wait_for_selector(UPWORK_SEARCH_RESULTS_READY, timeout=NAV_TIMEOUT_MS)
+    async def _discover_once(headless: bool) -> list[FilteredJobCard]:
+        jobs: list[FilteredJobCard] = []
+        seen: set[str] = set()
+        stop_scan = False
+        async with persistent_upwork_session(user_data_dir=profile_dir, headless=headless) as context:
+            page = await context.new_page()
+            await block_heavy_resources(page)
+            try:
+                response = await page.goto(UPWORK_FIND_WORK_URL, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
+                if response is not None and response.status >= 400:
+                    raise RuntimeError(f"Upwork returned HTTP {response.status} for {UPWORK_FIND_WORK_URL}")
+                await _ensure_authenticated_search_page(page)
+                await _submit_search_query(page, query)
+                await _apply_required_filters(page)
+                await _apply_configured_filters(page, selected_filters)
+                await page.wait_for_selector(UPWORK_SEARCH_RESULTS_READY, timeout=NAV_TIMEOUT_MS)
 
-        for _ in range(SCROLL_ROUNDS):
-            cards = page.locator(UPWORK_JOB_CARD)
-            count = await cards.count()
-            for index in range(count):
-                card = await _card_to_job(cards.nth(index))
-                if card is None or card.upwork_id in seen:
-                    continue
-                seen.add(card.upwork_id)
-                if card.upwork_id == last_scraped_upwork_id or get_job_by_upwork_id(card.upwork_id, db_path):
-                    stop_scan = True
-                    break
-                if _is_older_than_max_age(card.posted_age_text):
-                    continue
-                if selected_filters.max_connects and card.connects_required > selected_filters.max_connects:
-                    continue
-                jobs.append(card)
-            if stop_scan:
-                break
-            await page.mouse.wheel(0, 1800)
-            await asyncio.sleep(1.0)
-        await page.close()
+                for _ in range(SCROLL_ROUNDS):
+                    cards = page.locator(UPWORK_JOB_CARD)
+                    count = await cards.count()
+                    for index in range(count):
+                        card = await _card_to_job(cards.nth(index))
+                        if card is None or card.upwork_id in seen:
+                            continue
+                        seen.add(card.upwork_id)
+                        if card.upwork_id == last_scraped_upwork_id or get_job_by_upwork_id(card.upwork_id, db_path):
+                            stop_scan = True
+                            break
+                        if _is_older_than_max_age(card.posted_age_text):
+                            continue
+                        if selected_filters.max_connects and card.connects_required > selected_filters.max_connects:
+                            continue
+                        if _contains_ignored_keyword(card, ignored_keywords):
+                            logger.info("Ignored Upwork job by keyword | upwork_id=%s | title=%s", card.upwork_id, card.title)
+                            continue
+                        jobs.append(card)
+                    if stop_scan:
+                        break
+                    await page.mouse.wheel(0, 1800)
+                    await asyncio.sleep(1.0)
+            finally:
+                await page.close()
+        return jobs
+
+    jobs = await _discover_once(headless=True)
 
     logger.info("Discovered %d filtered Upwork jobs", len(jobs))
     return jobs
@@ -308,5 +339,6 @@ __all__ = [
     "LAST_SCRAPED_UPWORK_ID_KEY",
     "MAX_JOB_AGE_DAYS",
     "SCROLL_ROUNDS",
+    "UpworkAuthenticationError",
     "discover_filtered_jobs",
 ]

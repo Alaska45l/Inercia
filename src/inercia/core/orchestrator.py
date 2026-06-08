@@ -9,7 +9,7 @@ from inercia.config import get_settings
 from inercia.core.state import EstadoBot
 from inercia.db.manager import init_db, set_session_value, upsert_job
 from inercia.scraper.feed import FeedDownloadError, FeedJob, fetch_jobs
-from inercia.scraper.engine import stealth_context
+from inercia.scraper.engine import browser_context
 from inercia.scraper.filter_scraper import FilteredJobCard, LAST_SCRAPED_UPWORK_ID_KEY, discover_filtered_jobs
 from inercia.scraper.job_detail import extract_job_markdown
 
@@ -83,7 +83,7 @@ async def _consumer(
                     raise TypeError("Unexpected queue item")
                 if allow_network and context is None:
                     async with browser_lock:
-                        context_manager = stealth_context(str(settings.upwork_session_dir))
+                        context_manager = browser_context(str(settings.upwork_session_dir))
                         context = await context_manager.__aenter__()
                 detail = await extract_job_markdown(
                     item.url,

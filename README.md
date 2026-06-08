@@ -5,7 +5,7 @@
   <img src="https://img.shields.io/badge/Python-3.11+-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python 3.11+">
   <img src="https://img.shields.io/badge/LangGraph-StateGraph-1C3C3C?style=flat-square&logo=python&logoColor=white" alt="LangGraph">
   <img src="https://img.shields.io/badge/Gemini-2.5_Flash_%7C_Pro-4285F4?style=flat-square&logo=google&logoColor=white" alt="Gemini API">
-  <img src="https://img.shields.io/badge/Playwright-Stealth-2EAD33?style=flat-square&logo=playwright&logoColor=white" alt="Playwright">
+  <img src="https://img.shields.io/badge/Playwright-Persistent_Profile-2EAD33?style=flat-square&logo=playwright&logoColor=white" alt="Playwright">
   <img src="https://img.shields.io/badge/Tauri_v2-Svelte_5-FFC131?style=flat-square&logo=tauri&logoColor=black" alt="Tauri v2">
   <img src="https://img.shields.io/badge/SQLite-WAL-003B57?style=flat-square&logo=sqlite&logoColor=white" alt="SQLite WAL">
   <img src="https://img.shields.io/badge/Typst-Dynamic_CV-239BBE?style=flat-square&logo=typst&logoColor=white" alt="Typst">
@@ -13,13 +13,13 @@
 
 ---
 
-Inercia is an autonomous Upwork job application system. It scrapes listings via RSS + stealth Playwright, runs a 4-node AI pipeline (extraction → ROI scoring → cover letter generation → self-reflection critic), compiles keyword-injected CVs with Typst, fills out the Apply form, and presents everything in a Tauri desktop dashboard where you accept or reject each proposal before it's submitted.
+Inercia is an autonomous Upwork job application system. It collects listings via RSS or a user-consented Playwright browser profile, runs a 4-node AI pipeline (extraction → ROI scoring → cover letter generation → self-reflection critic), compiles keyword-injected CVs with Typst, fills out the Apply form, and presents everything in a Tauri desktop dashboard where you accept or reject each proposal before it's submitted.
 
 ## <img src="https://api.iconify.design/material-symbols/lightbulb.svg?color=%23007acc" width="24" height="24" align="center"> Why Inercia? (Architecture & Philosophy)
 
 Inercia was born from the realization that freelancing platforms are a credit-burning machine. Upwork charges connects per proposal, and most AI-powered applier bots out there blast generic cover letters at everything — burning your budget on WordPress gigs and $20 fixed-price projects.
 
-After reviewing the existing open-source solutions ([kaymen99/upwork-ai-jobs-applier](https://github.com/kaymen99/upwork-ai-jobs-applier)), I found good ideas but critical weaknesses: fragile Playwright configs, no anti-detection, LLM-based scoring (hallucination-prone), and no economic filtering. On the other hand, my own [jobbot](https://github.com/alaska45l/jobbot) had a battle-tested Producer-Consumer engine, stealth browser, and deterministic scoring — but no Upwork integration.
+After reviewing the existing open-source solutions ([kaymen99/upwork-ai-jobs-applier](https://github.com/kaymen99/upwork-ai-jobs-applier)), I found good ideas but critical weaknesses: fragile Playwright configs, LLM-based scoring (hallucination-prone), and no economic filtering. On the other hand, my own [jobbot](https://github.com/alaska45l/jobbot) had a battle-tested Producer-Consumer engine and deterministic scoring — but no Upwork integration.
 
 Inercia fuses the best of both under a strict technical philosophy:
 
@@ -27,7 +27,7 @@ Inercia fuses the best of both under a strict technical philosophy:
 * **Kill List:** WordPress, Wix, Shopify, Squarespace, Joomla, Drupal, and 10 more keywords trigger an instant `roi = -100`. Zero connects wasted on credit-killing gigs.
 * **Human-in-the-Loop:** The bot *never* clicks Submit. It fills out the entire Apply form, then stops. You review the proposal in a glassmorphism Tauri UI and click Accept or Reject. Your account, your final call.
 * **Critic Self-Reflection:** A 2-iteration critic node catches AI-typical openings ("I am writing to express my interest..."), enforces a 150-word cap, and rewrites robotic phrases before the proposal reaches you.
-* **Stealth Scraping:** Chromium with `webdriver` override, viewport randomization, resource blocking, timezone spoofing, and human mouse jitter — inherited from jobbot's production stealth engine.
+* **Manual Session Reuse:** A separate local Chromium profile stores the user's own Upwork session after manual login. The app verifies page state before live scraping and does not store credentials in code.
 * **Dynamic CVs (Typst):** Each proposal gets a freshly compiled PDF with the job's exact keywords injected into the Typst template, optimized for Upwork's compact format.
 
 ---
@@ -37,7 +37,7 @@ Inercia fuses the best of both under a strict technical philosophy:
 * **Dual Orchestration Layer:** The Producer-Consumer pipeline (`asyncio.Queue`, sentinel pattern, backpressure) handles scraping. LangGraph's `StateGraph` handles the AI pipeline. They run independently — scraping is I/O-bound, AI is compute-bound.
 * **4-Node LangGraph Pipeline:** `Extractor` (Gemini Flash → structured JSON) → `Investor` (deterministic ROI, no LLM) → `Copywriter` (Gemini Pro → 150-word cover letter) → `Critic` (Gemini Flash → self-reflection, max 2 rewrites).
 * **Offline-First Design:** Every LLM node has a deterministic fallback. If `GEMINI_API_KEY` is not set, the full pipeline still runs with hardcoded logic — perfect for development and testing.
-* **RSS + Playwright Hybrid:** Job discovery via Upwork's RSS feed (no browser needed), job detail extraction via stealth Playwright (only for the job page).
+* **RSS + Playwright Hybrid:** Job discovery via Upwork's RSS feed in offline/dev mode, plus optional user-consented Playwright browsing for authenticated search and job details.
 * **WebSocket API:** Python API server on `ws://127.0.0.1:{WS_PORT}` pushes `ProposalReady` events directly to the Tauri frontend in real-time.
 * **Daily Proposal Cap:** Hardcoded limit of 12 proposals/day, enforced at pipeline level before each job is processed.
 * **Connects Tracking:** Every approval logs connects spent to the `connects_log` table. The UI shows a circular progress tracker with remaining balance.
@@ -61,7 +61,7 @@ inercia/
 │       │   ├── scheduler.py          # Periodic scan loop
 │       │   └── state.py              # Shared EstadoBot dataclass, thread-safe snapshot
 │       ├── scraper/
-│       │   ├── engine.py             # Playwright stealth (CHROMIUM_ARGS, jitter, blocking)
+│       │   ├── engine.py             # Playwright context setup and resource controls
 │       │   ├── feed.py               # Upwork RSS parser (no browser)
 │       │   ├── job_detail.py         # Job page → Markdown extraction
 │       │   └── selectors.py          # All Upwork CSS/XPath selectors (centralized)
@@ -165,6 +165,9 @@ WS_PORT=9741
 
 # Login browser DevTools port
 LOGIN_DEBUG_PORT=9742
+
+# Live Upwork browsing is opt-in. Offline mock scraping works without this.
+ALLOW_UPWORK_NETWORK=false
 ```
 
 ### 4. External System Dependencies
@@ -237,7 +240,7 @@ python -m inercia init-db
 # Offline (mock RSS — for development)
 python -m inercia scrape "python developer"
 
-# Live (real Upwork RSS + stealth Playwright for job details)
+# Live (authenticated Playwright session for search and job details)
 python -m inercia scrape "python developer" --allow-network
 python -m inercia scrape "svelte rust tauri" --allow-network
 ```
@@ -392,7 +395,7 @@ UPDATE jobs SET status = 'new' WHERE status != 'blacklisted';
 | AI Orchestration | LangGraph `StateGraph` (4 nodes, conditional edges) |
 | LLM | Gemini 2.5 Flash (extraction, critic), Gemini 2.5 Pro (copywriting) |
 | LLM SDK | `google-genai` with Pydantic structured output |
-| Browser | Playwright Chromium (headless, stealth, resource blocking) |
+| Browser | Playwright Chromium (persistent user profile, explicit waits, resource controls) |
 | Database | SQLite3 (WAL mode, `STRICT` tables, foreign keys) |
 | CV Compiler | Typst CLI (keyword-injected `.typ` templates) |
 | Desktop UI | Tauri v2 + Svelte 5 + TypeScript |
@@ -406,6 +409,7 @@ UPDATE jobs SET status = 'new' WHERE status != 'blacklisted';
 
 * **No automated login.** You must log into Upwork manually once. The bot reuses the persistent session.
 * **No automated Submit.** The bot fills out the Apply form and stops. You approve via the UI.
+* **No stealth or protection bypass.** The browser automation does not bypass CAPTCHA, MFA, access controls, rate limits, or bot detection.
 * **Daily cap enforced.** The pipeline refuses to process more than 12 proposals/day (configurable in `.env`).
 * **Upwork selectors are volatile.** Upwork's SPA (React) changes DOM structure frequently. All selectors are centralized in `scraper/selectors.py` for easy updates.
 * **Connects are real money.** The ROI calculator is conservative by design. Tune `FLOOR_HOURLY_RATE` and `FLOOR_FIXED_RATE` in `.env` to match your minimum acceptable rates.

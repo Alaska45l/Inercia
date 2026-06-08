@@ -6,9 +6,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
+use std::thread;
 use tauri::{AppHandle, Emitter, Manager, State};
-use tokio::net::TcpStream;
 use tokio::time::{sleep, Duration};
+use tokio_tungstenite::connect_async;
 
 struct PythonSidecar {
     child: Mutex<Option<Child>>,
@@ -132,10 +133,79 @@ fn inject_ws_port(app: &AppHandle, ws_port: u16) {
     }
 }
 
+#[cfg(target_os = "linux")]
+fn read_proc_cmdline(pid: u32) -> Option<String> {
+    let bytes = fs::read(format!("/proc/{pid}/cmdline")).ok()?;
+    if bytes.is_empty() {
+        return None;
+    }
+    Some(
+        bytes
+            .split(|byte| *byte == 0)
+            .filter_map(|part| std::str::from_utf8(part).ok())
+            .collect::<Vec<_>>()
+            .join(" "),
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn read_proc_cwd(pid: u32) -> Option<PathBuf> {
+    fs::read_link(format!("/proc/{pid}/cwd")).ok()
+}
+
+#[cfg(target_os = "linux")]
+fn process_exists(pid: u32) -> bool {
+    Path::new(&format!("/proc/{pid}")).exists()
+}
+
+#[cfg(target_os = "linux")]
+fn stop_process(pid: u32) {
+    let _ = Command::new("kill").arg("-TERM").arg(pid.to_string()).status();
+    thread::sleep(std::time::Duration::from_millis(300));
+    if process_exists(pid) {
+        let _ = Command::new("kill").arg("-KILL").arg(pid.to_string()).status();
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn stop_stale_project_api_processes(project_root: &Path) {
+    let Ok(entries) = fs::read_dir("/proc") else {
+        return;
+    };
+    let current_pid = std::process::id();
+    for entry in entries.flatten() {
+        let file_name = entry.file_name();
+        let Some(raw_pid) = file_name.to_str() else {
+            continue;
+        };
+        let Ok(pid) = raw_pid.parse::<u32>() else {
+            continue;
+        };
+        if pid == current_pid {
+            continue;
+        }
+        let Some(cmdline) = read_proc_cmdline(pid) else {
+            continue;
+        };
+        if !cmdline.contains("-m inercia api") {
+            continue;
+        }
+        let Some(cwd) = read_proc_cwd(pid) else {
+            continue;
+        };
+        if cwd == project_root {
+            stop_process(pid);
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn stop_stale_project_api_processes(_project_root: &Path) {}
+
 async fn check_python_health(app: AppHandle, ws_port: u16) {
-    let address = format!("127.0.0.1:{ws_port}");
+    let url = format!("ws://127.0.0.1:{ws_port}");
     for _ in 0..20 {
-        if TcpStream::connect(&address).await.is_ok() {
+        if connect_async(&url).await.is_ok() {
             return;
         }
         sleep(Duration::from_millis(500)).await;
@@ -170,6 +240,7 @@ fn spawn_python_api(app: &AppHandle, state: &PythonSidecar) -> Result<u16, Strin
         .stdout(Stdio::null())
         .stderr(Stdio::inherit());
     state.stop()?;
+    stop_stale_project_api_processes(&cwd);
     let child = command
         .spawn()
         .map_err(|error| format!("failed to spawn Python API: {error}"))?;

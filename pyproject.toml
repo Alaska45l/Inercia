@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "inercia"
-version = "1.0.0"
-description = "Autonomous Upwork proposal pipeline with human approval."
+version = "0.3.0a0"
+description = "Alpha local Upwork proposal pipeline with human approval."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

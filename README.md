@@ -1,5 +1,5 @@
 <div align="center">
-  <h1>Inercia v1.0.0</h1>
+  <h1>Inercia v0.3.0</h1>
   <p><strong>Autonomous Upwork Proposal Pipeline with AI Scoring, Cover Letter Generation & Human-in-the-Loop Approval</strong></p>
 
   <img src="https://img.shields.io/badge/Python-3.11+-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python 3.11+">

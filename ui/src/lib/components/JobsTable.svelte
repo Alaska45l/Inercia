@@ -21,6 +21,10 @@
     if (status === 'blacklisted' || status === 'rejected') return 'is-err';
     return 'is-muted';
   }
+
+  function sourceLabel(source: string): string {
+    return source.replace('upwork_', '');
+  }
 </script>
 
 <section class="control-panel">
@@ -42,7 +46,10 @@
         <tr>
           <th>ID</th>
           <th>Title</th>
+          <th>Source</th>
           <th>Type</th>
+          <th>Payment</th>
+          <th class="numeric">Connects</th>
           <th class="numeric">ROI</th>
           <th>Status</th>
           <th>Scraped</th>
@@ -52,15 +59,27 @@
         {#each $jobs as job (job.id)}
           <tr>
             <td>{job.id}</td>
-            <td>{job.title}</td>
+            <td>
+              {#if job.url}
+                <a href={job.url} target="_blank" rel="noreferrer">{job.title}</a>
+              {:else}
+                {job.title}
+              {/if}
+              {#if job.posted_age_text}
+                <div class="is-muted">{job.posted_age_text}</div>
+              {/if}
+            </td>
+            <td>{sourceLabel(job.source)}</td>
             <td>{job.job_type}</td>
+            <td class={job.client_payment_verified ? 'is-ok' : 'is-muted'}>{job.client_payment_verified ? 'verified' : '-'}</td>
+            <td class="numeric mono">{job.connects_required}</td>
             <td class="numeric mono">{job.roi_score === null ? '-' : job.roi_score.toFixed(1)}</td>
             <td class={statusClass(job.status)}>{job.status}</td>
             <td class="mono">{job.scraped_at}</td>
           </tr>
         {:else}
           <tr>
-            <td colspan="6" class="empty-table">No jobs.</td>
+            <td colspan="9" class="empty-table">No jobs.</td>
           </tr>
         {/each}
       </tbody>

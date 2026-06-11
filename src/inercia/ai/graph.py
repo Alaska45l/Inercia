@@ -167,8 +167,19 @@ async def run_pipeline_for_markdown(
 
 
 def _job_update_payload(row: sqlite3.Row, detail: JobDetail, roi: ROIScore, status: str) -> dict[str, object]:
+    row_keys = set(row.keys())
+
+    def row_value(key: str, default: object = None) -> object:
+        if key not in row_keys:
+            return default
+        return row[key]
+
     return {
         "upwork_id": str(row["upwork_id"]),
+        "url": row_value("url"),
+        "source": row_value("source", "unknown") or "unknown",
+        "source_metadata": row_value("source_metadata"),
+        "posted_age_text": row_value("posted_age_text"),
         "title": detail.title,
         "description": detail.description,
         "job_type": detail.job_type,
@@ -183,6 +194,7 @@ def _job_update_payload(row: sqlite3.Row, detail: JobDetail, roi: ROIScore, stat
         "client_total_spent": detail.client_total_spent,
         "client_hire_rate": detail.client_hire_rate,
         "client_reviews": detail.client_reviews,
+        "client_payment_verified": int(row_value("client_payment_verified", 0) or 0),
         "connects_required": detail.connects_required,
         "questions": detail.questions,
         "allows_attachments": 1 if detail.allows_attachments else 0,

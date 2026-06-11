@@ -8,6 +8,10 @@ from typing import Optional
 class JobRow:
     id: int
     upwork_id: str
+    url: Optional[str]
+    source: str
+    source_metadata: Optional[str]
+    posted_age_text: Optional[str]
     title: str
     description: str
     job_type: str
@@ -22,6 +26,7 @@ class JobRow:
     client_total_spent: float
     client_hire_rate: float
     client_reviews: int
+    client_payment_verified: int
     connects_required: int
     questions: Optional[str]
     allows_attachments: int

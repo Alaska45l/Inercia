@@ -13,9 +13,14 @@ from inercia.config import DEFAULT_BLACKLIST_KEYWORDS, DEFAULT_SETTING_VALUES, R
 logger = logging.getLogger("inercia.db.manager")
 
 SCHEMA_PATH = Path(__file__).with_name("schema.sql")
+SCHEMA_VERSION: int = 1
 
 JOB_COLUMNS: tuple[str, ...] = (
     "upwork_id",
+    "url",
+    "source",
+    "source_metadata",
+    "posted_age_text",
     "title",
     "description",
     "job_type",
@@ -30,6 +35,7 @@ JOB_COLUMNS: tuple[str, ...] = (
     "client_total_spent",
     "client_hire_rate",
     "client_reviews",
+    "client_payment_verified",
     "connects_required",
     "questions",
     "allows_attachments",
@@ -55,6 +61,19 @@ PROPOSAL_COLUMNS: tuple[str, ...] = (
 JOB_REQUIRED_COLUMNS: frozenset[str] = frozenset({"upwork_id", "title", "description", "job_type"})
 PROPOSAL_REQUIRED_COLUMNS: frozenset[str] = frozenset(
     {"job_id", "cover_letter", "bid_rate", "bid_type", "connects_cost", "roi_score"}
+)
+
+ACTIVE_PROPOSAL_STATUSES: tuple[str, ...] = ("pending", "approved")
+
+JOB_MIGRATION_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("url", "url TEXT"),
+    ("source", "source TEXT NOT NULL DEFAULT 'unknown'"),
+    ("source_metadata", "source_metadata TEXT"),
+    ("posted_age_text", "posted_age_text TEXT"),
+    (
+        "client_payment_verified",
+        "client_payment_verified INTEGER NOT NULL DEFAULT 0 CHECK(client_payment_verified IN (0, 1))",
+    ),
 )
 
 
@@ -92,8 +111,33 @@ def init_db(db_path: Optional[Path] = None) -> None:
     schema = SCHEMA_PATH.read_text(encoding="utf-8")
     with get_connection(selected_db_path) as conn:
         conn.executescript(schema)
+        _ensure_schema_migrations(conn)
         _ensure_session_defaults(conn)
     logger.info("Database initialized at %s", selected_db_path)
+
+
+def _table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
+    rows = conn.execute(f"PRAGMA table_info({table_name});").fetchall()
+    return {str(row["name"]) for row in rows}
+
+
+def _add_column_if_missing(conn: sqlite3.Connection, table_name: str, column_name: str, column_sql: str) -> None:
+    if column_name in _table_columns(conn, table_name):
+        return
+    conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_sql};")
+    logger.info("Database migrated | table=%s | added_column=%s", table_name, column_name)
+
+
+def _ensure_schema_migrations(conn: sqlite3.Connection) -> None:
+    for column_name, column_sql in JOB_MIGRATION_COLUMNS:
+        _add_column_if_missing(conn, "jobs", column_name, column_sql)
+
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_url ON jobs(url);")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_source_scraped ON jobs(source, scraped_at DESC);")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_proposals_job_status ON proposals(job_id, status);")
+    current_version = int(conn.execute("PRAGMA user_version;").fetchone()[0])
+    if current_version < SCHEMA_VERSION:
+        conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION};")
 
 
 def _ensure_session_defaults(conn: sqlite3.Connection) -> None:
@@ -126,6 +170,10 @@ def _normalize_job_values(job: Mapping[str, Any]) -> dict[str, Any]:
         values["skills"] = _json_or_none(values["skills"])
     if "questions" in values:
         values["questions"] = _json_or_none(values["questions"])
+    if "source_metadata" in values:
+        values["source_metadata"] = _json_or_none(values["source_metadata"])
+    if "client_payment_verified" in values:
+        values["client_payment_verified"] = 1 if values["client_payment_verified"] else 0
     return values
 
 
@@ -214,7 +262,41 @@ def create_proposal(proposal: Mapping[str, Any], db_path: Optional[Path] = None)
         VALUES ({placeholders})
         RETURNING id;
     """
+    active_status_placeholders = ", ".join("?" for _ in ACTIVE_PROPOSAL_STATUSES)
     with get_connection(db_path) as conn:
+        existing = conn.execute(
+            f"""
+            SELECT id, status
+            FROM proposals
+            WHERE job_id = ?
+              AND status IN ({active_status_placeholders})
+            ORDER BY CASE status WHEN 'pending' THEN 0 ELSE 1 END,
+                     created_at DESC,
+                     id DESC
+            LIMIT 1;
+            """,
+            (values["job_id"], *ACTIVE_PROPOSAL_STATUSES),
+        ).fetchone()
+        if existing is not None:
+            proposal_id = int(existing["id"])
+            status = str(existing["status"])
+            if status == "pending":
+                update_columns = [column for column in columns if column != "job_id"]
+                if update_columns:
+                    update_clause = ", ".join(f"{column} = :{column}" for column in update_columns)
+                    conn.execute(
+                        f"UPDATE proposals SET {update_clause} WHERE id = :_proposal_id;",
+                        {**values, "_proposal_id": proposal_id},
+                    )
+                logger.info("Proposal updated | id=%d | job_id=%s", proposal_id, values["job_id"])
+            else:
+                logger.info(
+                    "Existing active proposal reused | id=%d | job_id=%s | status=%s",
+                    proposal_id,
+                    values["job_id"],
+                    status,
+                )
+            return proposal_id
         row = conn.execute(sql, values).fetchone()
     proposal_id = int(row["id"])
     logger.info("Proposal created | id=%d | job_id=%s", proposal_id, values["job_id"])
@@ -357,6 +439,7 @@ def get_blacklist_keywords(db_path: Optional[Path] = None) -> list[str]:
 
 
 __all__ = [
+    "SCHEMA_VERSION",
     "create_proposal",
     "count_submitted_today",
     "get_connection",

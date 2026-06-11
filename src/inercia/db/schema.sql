@@ -5,6 +5,10 @@ PRAGMA foreign_keys = ON;
 CREATE TABLE IF NOT EXISTS jobs (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     upwork_id       TEXT    NOT NULL UNIQUE,
+    url             TEXT,
+    source          TEXT    NOT NULL DEFAULT 'unknown',
+    source_metadata TEXT,
+    posted_age_text TEXT,
     title           TEXT    NOT NULL,
     description     TEXT    NOT NULL,
     job_type        TEXT    NOT NULL CHECK(job_type IN ('hourly', 'fixed')),
@@ -19,6 +23,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     client_total_spent REAL DEFAULT 0,
     client_hire_rate   REAL DEFAULT 0,
     client_reviews     INTEGER DEFAULT 0,
+    client_payment_verified INTEGER NOT NULL DEFAULT 0 CHECK(client_payment_verified IN (0, 1)),
     connects_required  INTEGER DEFAULT 0,
     questions       TEXT,
     allows_attachments INTEGER DEFAULT 0,

@@ -168,8 +168,22 @@ class ProcessDoneData(TypedDict):
 class JobRow(TypedDict):
     id: int
     upwork_id: str
+    url: Optional[str]
+    source: str
+    source_metadata: Optional[str]
+    posted_age_text: Optional[str]
     title: str
+    description: str
     job_type: str
+    budget_min: Optional[float]
+    budget_max: Optional[float]
+    hourly_rate_min: Optional[float]
+    hourly_rate_max: Optional[float]
+    client_country: Optional[str]
+    client_total_spent: Optional[float]
+    client_payment_verified: bool
+    connects_required: int
+    skills: list[str]
     roi_score: Optional[float]
     status: str
     scraped_at: str

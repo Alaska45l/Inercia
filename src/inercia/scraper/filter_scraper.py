@@ -47,6 +47,7 @@ class FilteredJobCard:
     description: str
     posted_age_text: str
     connects_required: int
+    client_payment_verified: bool = False
     job_type: str = "hourly"
 
 
@@ -242,6 +243,7 @@ async def _card_to_job(card: object) -> Optional[FilteredJobCard]:
         description=description,
         posted_age_text=posted_age_text,
         connects_required=_extract_connects(text),
+        client_payment_verified="payment verified" in text.lower(),
         job_type=_extract_job_type(text),
     )
 

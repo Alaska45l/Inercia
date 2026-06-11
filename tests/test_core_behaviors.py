@@ -3,10 +3,11 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from inercia.ai.nodes.extractor import deterministic_extract
 from inercia.ai.nodes.investor import score_job
-from inercia.api.server import _settings_payload
+from inercia.api.server import _login_status_from_debug, _settings_payload
 from inercia.config import DEFAULT_BLACKLIST_KEYWORDS
 from inercia.db.manager import init_db, set_session_value
 from inercia.scraper.filter_scraper import (
@@ -70,6 +71,28 @@ class SettingsPayloadTests(unittest.TestCase):
         self.assertEqual(payload["opencode_api_key"], "")
         self.assertTrue(payload["has_gemini_key"])
         self.assertTrue(payload["has_opencode_key"])
+
+
+class LoginStatusTests(unittest.TestCase):
+    def test_login_status_ignores_browser_internal_debug_pages(self) -> None:
+        with (
+            patch("inercia.api.server._login_browser_pids", return_value=[123]),
+            patch(
+                "inercia.api.server._login_debug_pages",
+                return_value=[
+                    {"type": "service_worker", "url": "https://www.upwork.com/ab/account-security/sw.js"},
+                    {"type": "service_worker", "url": "chrome-extension://extension/background.js"},
+                    {"type": "browser_ui", "url": "chrome://newtab/"},
+                    {"type": "page", "url": "https://www.upwork.com/ab/account-security/login"},
+                ],
+            ),
+        ):
+            status = _login_status_from_debug(Path("."), 9742)
+
+        self.assertTrue(status["browser_open"])
+        self.assertFalse(status["authenticated"])
+        self.assertEqual(status["current_url"], "https://www.upwork.com/ab/account-security/login")
+        self.assertEqual(status["message"], "Waiting for login...")
 
 
 if __name__ == "__main__":

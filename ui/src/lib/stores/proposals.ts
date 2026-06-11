@@ -53,8 +53,22 @@ export interface ConnectsBalance {
 export interface JobRow {
   id: number;
   upwork_id: string;
+  url: string | null;
+  source: string;
+  source_metadata: string | null;
+  posted_age_text: string | null;
   title: string;
+  description: string;
   job_type: 'hourly' | 'fixed';
+  budget_min: number | null;
+  budget_max: number | null;
+  hourly_rate_min: number | null;
+  hourly_rate_max: number | null;
+  client_country: string | null;
+  client_total_spent: number | null;
+  client_payment_verified: boolean;
+  connects_required: number;
+  skills: string[];
   roi_score: number | null;
   status: string;
   scraped_at: string;

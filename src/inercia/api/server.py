@@ -146,7 +146,7 @@ def _settings_payload(db_path: Optional[Path]) -> dict[str, Any]:
     }
 
 
-def _login_browser_pids(profile_dir: Path) -> list[int]:
+def _login_browser_pids(profile_dir: Path, debug_port: Optional[int] = None) -> list[int]:
     if not sys.platform.startswith("linux"):
         if (
             _login_process is not None
@@ -158,6 +158,7 @@ def _login_browser_pids(profile_dir: Path) -> list[int]:
         return []
 
     needle = f"--user-data-dir={profile_dir}"
+    debug_needle = f"--remote-debugging-port={debug_port}" if debug_port is not None else None
     pids: list[int] = []
     proc_root = Path("/proc")
     if not proc_root.exists():
@@ -169,7 +170,7 @@ def _login_browser_pids(profile_dir: Path) -> list[int]:
             cmdline = proc_dir.joinpath("cmdline").read_bytes().decode(errors="ignore")
         except OSError:
             continue
-        if needle in cmdline:
+        if needle in cmdline and (debug_needle is None or debug_needle in cmdline):
             pids.append(int(proc_dir.name))
     return pids
 
@@ -202,13 +203,16 @@ def _set_login_status_state(status: dict[str, Any]) -> None:
 
 
 def _login_status_from_debug(profile_dir: Path, debug_port: int) -> dict[str, Any]:
-    browser_open = bool(_login_browser_pids(profile_dir))
+    browser_open = bool(_login_browser_pids(profile_dir, debug_port))
     current_url = ""
     authenticated = False
     message = "Waiting for login..." if browser_open else "Login browser closed"
     for page in _login_debug_pages(debug_port):
+        target_type = str(page.get("type", "page"))
+        if target_type != "page":
+            continue
         url = str(page.get("url", ""))
-        if not url or url.startswith("devtools://"):
+        if not url or url.startswith(("devtools://", "chrome://", "chrome-extension://", "about:")):
             continue
         current_url = url
         if is_upwork_login_url(url):
@@ -238,7 +242,7 @@ def _auth_status_payload(status: UpworkAuthStatus, browser_open: bool = False) -
 async def _login_status_payload(db_path: Optional[Path]) -> dict[str, Any]:
     settings = get_settings(db_path=db_path)
     profile_dir = _login_profile_dir or settings.upwork_session_dir
-    if _login_browser_pids(profile_dir):
+    if _login_browser_pids(profile_dir, settings.login_debug_port):
         return _login_status_from_debug(profile_dir, settings.login_debug_port)
     return _auth_status_payload(await verify_upwork_session(settings.upwork_session_dir))
 
@@ -504,6 +508,10 @@ async def _send_json(websocket: Any, message: dict[str, Any]) -> None:
     await websocket.send(json.dumps(message))
 
 
+def _is_connection_closed_error(exc: Exception) -> bool:
+    return "ConnectionClosed" in type(exc).__name__
+
+
 async def _send_initial_state(websocket: Any, db_path: Optional[Path]) -> None:
     total = await asyncio.to_thread(_get_connects_total, db_path)
     spent_today = await asyncio.to_thread(get_connects_spent_today, db_path)
@@ -537,7 +545,7 @@ async def _handle_user_approved(
         return error_message(f"Daily proposal cap reached: {submitted_today}/{settings.daily_proposal_cap}"), None
 
     user_data_dir = settings.upwork_session_dir
-    if _login_browser_pids(user_data_dir):
+    if _login_browser_pids(user_data_dir, settings.login_debug_port):
         return error_message("Finish Upwork login, wait for /nx/find-work/, then close the login browser before approving"), None
     if settings.allow_upwork_network:
         session_status = await verify_upwork_session(user_data_dir)
@@ -620,7 +628,7 @@ async def _handle_run_scrape(payload: dict[str, Any], websocket: Any, db_path: O
         label = query or "configured filters"
         try:
             if allow_network:
-                if _login_browser_pids(settings.upwork_session_dir):
+                if _login_browser_pids(settings.upwork_session_dir, settings.login_debug_port):
                     raise RuntimeError("Close the Upwork login browser before starting live scraping")
                 session_status = await verify_upwork_session(settings.upwork_session_dir)
                 _set_login_status_state(_auth_status_payload(session_status))
@@ -710,7 +718,7 @@ async def _handle_open_upwork_login(payload: dict[str, Any], websocket: Any, db_
     global _login_process, _login_profile_dir, _login_poll_task
     settings = get_settings(db_path=db_path)
     profile_dir = settings.upwork_session_dir
-    if _login_browser_pids(profile_dir):
+    if _login_browser_pids(profile_dir, settings.login_debug_port):
         return error_message("Login browser already open"), None
     await _stop_login_poll_task()
     profile_dir.mkdir(parents=True, exist_ok=True)
@@ -752,7 +760,7 @@ async def _handle_close_upwork_login(payload: dict[str, Any], websocket: Any, db
     settings = get_settings(db_path=db_path)
     profile_dir = _login_profile_dir or settings.upwork_session_dir
     await _stop_login_poll_task()
-    if not _login_browser_pids(profile_dir):
+    if not _login_browser_pids(profile_dir, settings.login_debug_port):
         _login_process = None
         _login_profile_dir = None
         _set_login_status_state(
@@ -779,7 +787,7 @@ async def _handle_close_upwork_login(payload: dict[str, Any], websocket: Any, db
 async def _handle_check_upwork_session(payload: dict[str, Any], websocket: Any, db_path: Optional[Path]) -> HandlerResult:
     del payload, websocket
     settings = get_settings(db_path=db_path)
-    if _login_browser_pids(settings.upwork_session_dir):
+    if _login_browser_pids(settings.upwork_session_dir, settings.login_debug_port):
         status = _login_status_from_debug(settings.upwork_session_dir, settings.login_debug_port)
         _set_login_status_state(status)
         return login_status(status), None
@@ -792,6 +800,42 @@ def _list_all_jobs(limit: int, db_path: Optional[Path]) -> list[sqlite3.Row]:
     sql = "SELECT * FROM jobs ORDER BY scraped_at DESC LIMIT ?;"
     with get_connection(db_path) as conn:
         return conn.execute(sql, (limit,)).fetchall()
+
+
+def _row_has(row: sqlite3.Row, key: str) -> bool:
+    return key in row.keys()
+
+
+def _row_optional_str(row: sqlite3.Row, key: str) -> Optional[str]:
+    if not _row_has(row, key) or row[key] is None:
+        return None
+    value = str(row[key])
+    return value if value else None
+
+
+def _row_optional_float(row: sqlite3.Row, key: str) -> Optional[float]:
+    if not _row_has(row, key) or row[key] is None:
+        return None
+    return float(row[key])
+
+
+def _row_int(row: sqlite3.Row, key: str, default: int = 0) -> int:
+    if not _row_has(row, key) or row[key] is None:
+        return default
+    return int(row[key])
+
+
+def _row_string_list(row: sqlite3.Row, key: str) -> list[str]:
+    value = _row_optional_str(row, key)
+    if value is None:
+        return []
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return [value]
+    if not isinstance(parsed, list):
+        return []
+    return [str(item) for item in parsed if str(item).strip()]
 
 
 async def _handle_get_jobs(payload: dict[str, Any], websocket: Any, db_path: Optional[Path]) -> HandlerResult:
@@ -808,8 +852,22 @@ async def _handle_get_jobs(payload: dict[str, Any], websocket: Any, db_path: Opt
         {
             "id": int(row["id"]),
             "upwork_id": str(row["upwork_id"]),
+            "url": _row_optional_str(row, "url"),
+            "source": _row_optional_str(row, "source") or "unknown",
+            "source_metadata": _row_optional_str(row, "source_metadata"),
+            "posted_age_text": _row_optional_str(row, "posted_age_text"),
             "title": str(row["title"]),
+            "description": str(row["description"]),
             "job_type": str(row["job_type"]),
+            "budget_min": _row_optional_float(row, "budget_min"),
+            "budget_max": _row_optional_float(row, "budget_max"),
+            "hourly_rate_min": _row_optional_float(row, "hourly_rate_min"),
+            "hourly_rate_max": _row_optional_float(row, "hourly_rate_max"),
+            "client_country": _row_optional_str(row, "client_country"),
+            "client_total_spent": _row_optional_float(row, "client_total_spent"),
+            "client_payment_verified": bool(_row_int(row, "client_payment_verified")),
+            "connects_required": _row_int(row, "connects_required"),
+            "skills": _row_string_list(row, "skills"),
             "roi_score": float(row["roi_score"]) if row["roi_score"] is not None else None,
             "status": str(row["status"]),
             "scraped_at": str(row["scraped_at"]),
@@ -968,7 +1026,7 @@ async def _client_handler(websocket: Any, db_path: Optional[Path]) -> None:
     try:
         await _send_initial_state(websocket, db_path)
     except Exception as exc:
-        if "ConnectionClosed" in type(exc).__name__:
+        if _is_connection_closed_error(exc):
             logger.debug("Client disconnected before initial state was sent: %s", exc)
             return
         raise
@@ -984,8 +1042,24 @@ async def _client_handler(websocket: Any, db_path: Optional[Path]) -> None:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
+                if _is_connection_closed_error(exc):
+                    logger.debug("Client disconnected during message handling: %s", exc)
+                    break
                 logger.exception("Client message processing failed")
-                await _send_json(websocket, error_message(f"Request failed: {exc}"))
+                try:
+                    await _send_json(websocket, error_message(f"Request failed: {exc}"))
+                except Exception as send_exc:
+                    if _is_connection_closed_error(send_exc):
+                        logger.debug("Client disconnected before error response was sent: %s", send_exc)
+                        break
+                    raise
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        if _is_connection_closed_error(exc):
+            logger.debug("Client disconnected: %s", exc)
+        else:
+            raise
     finally:
         poller.cancel()
         await asyncio.gather(poller, return_exceptions=True)

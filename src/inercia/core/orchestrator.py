@@ -20,12 +20,29 @@ CONSUMER_COUNT: int = 1
 _QUEUE_SENTINEL: object = object()
 
 
-def _job_payload(feed_job: FeedJob | FilteredJobCard, raw_markdown: str) -> dict[str, object]:
+def _job_payload(feed_job: FeedJob | FilteredJobCard, raw_markdown: str, query: str) -> dict[str, object]:
+    is_filtered_search = isinstance(feed_job, FilteredJobCard)
+    source = "upwork_search" if is_filtered_search else "upwork_rss"
+    source_metadata: dict[str, object] = {
+        "collector": "authenticated_search" if is_filtered_search else "rss",
+        "query": query,
+        "url": feed_job.url,
+    }
+    if is_filtered_search:
+        source_metadata["posted_age_text"] = feed_job.posted_age_text
+        source_metadata["connects_required"] = feed_job.connects_required
+
     return {
         "upwork_id": feed_job.upwork_id,
+        "url": feed_job.url,
+        "source": source,
+        "source_metadata": source_metadata,
+        "posted_age_text": feed_job.posted_age_text if is_filtered_search else None,
         "title": feed_job.title,
         "description": feed_job.description or raw_markdown[:500],
         "job_type": feed_job.job_type,
+        "client_payment_verified": 1 if is_filtered_search and feed_job.client_payment_verified else 0,
+        "connects_required": feed_job.connects_required if is_filtered_search else 0,
         "raw_markdown": raw_markdown,
         "status": "new",
     }
@@ -91,7 +108,7 @@ async def _consumer(
                     user_data_dir=settings.upwork_session_dir if allow_network else None,
                     context=context,
                 )
-                payload = _job_payload(item, detail.markdown)
+                payload = _job_payload(item, detail.markdown, query=state.current_query)
                 await asyncio.to_thread(upsert_job, payload, db_path)
                 state.record_processed(inserted=True)
             except Exception as exc:

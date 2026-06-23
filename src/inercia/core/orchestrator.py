@@ -9,8 +9,13 @@ from inercia.config import get_settings
 from inercia.core.state import EstadoBot
 from inercia.db.manager import init_db, set_session_value, upsert_job
 from inercia.scraper.feed import FeedDownloadError, FeedJob, fetch_jobs
-from inercia.scraper.engine import browser_context
-from inercia.scraper.filter_scraper import FilteredJobCard, LAST_SCRAPED_UPWORK_ID_KEY, discover_filtered_jobs
+from inercia.applicator.session import persistent_upwork_session
+from inercia.scraper.filter_scraper import (
+    FilteredJobCard,
+    LAST_SCRAPED_UPWORK_ID_KEY,
+    _extract_connects,
+    discover_filtered_jobs,
+)
 from inercia.scraper.job_detail import extract_job_markdown
 
 logger = logging.getLogger("inercia.core.orchestrator")
@@ -23,14 +28,18 @@ _QUEUE_SENTINEL: object = object()
 def _job_payload(feed_job: FeedJob | FilteredJobCard, raw_markdown: str, query: str) -> dict[str, object]:
     is_filtered_search = isinstance(feed_job, FilteredJobCard)
     source = "upwork_search" if is_filtered_search else "upwork_rss"
+    connects_required = 0
     source_metadata: dict[str, object] = {
         "collector": "authenticated_search" if is_filtered_search else "rss",
         "query": query,
         "url": feed_job.url,
     }
     if is_filtered_search:
+        connects_required = feed_job.connects_required or _extract_connects(raw_markdown)
         source_metadata["posted_age_text"] = feed_job.posted_age_text
-        source_metadata["connects_required"] = feed_job.connects_required
+        source_metadata["connects_required"] = connects_required
+        if feed_job.proposals_count_text:
+            source_metadata["proposals_count_text"] = feed_job.proposals_count_text
 
     return {
         "upwork_id": feed_job.upwork_id,
@@ -42,7 +51,7 @@ def _job_payload(feed_job: FeedJob | FilteredJobCard, raw_markdown: str, query: 
         "description": feed_job.description or raw_markdown[:500],
         "job_type": feed_job.job_type,
         "client_payment_verified": 1 if is_filtered_search and feed_job.client_payment_verified else 0,
-        "connects_required": feed_job.connects_required if is_filtered_search else 0,
+        "connects_required": connects_required if is_filtered_search else 0,
         "raw_markdown": raw_markdown,
         "status": "new",
     }
@@ -100,7 +109,10 @@ async def _consumer(
                     raise TypeError("Unexpected queue item")
                 if allow_network and context is None:
                     async with browser_lock:
-                        context_manager = browser_context(str(settings.upwork_session_dir))
+                        context_manager = persistent_upwork_session(
+                            user_data_dir=settings.upwork_session_dir,
+                            headless=True,
+                        )
                         context = await context_manager.__aenter__()
                 detail = await extract_job_markdown(
                     item.url,

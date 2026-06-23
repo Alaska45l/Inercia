@@ -4,13 +4,16 @@ import asyncio
 import difflib
 import logging
 import re
+import urllib.parse
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+from inercia.applicator.auth import ensure_upwork_authenticated_page
 from inercia.applicator.session import UpworkSession, open_persistent_upwork_session
 from inercia.scraper.engine import NAV_TIMEOUT_MS, block_heavy_resources
 from inercia.scraper.selectors import (
+    UPWORK_APPLY_URL_PREFIX,
     UPWORK_ATTACHMENT_INPUT,
     UPWORK_COVER_LETTER,
     UPWORK_RATE_INPUT,
@@ -55,6 +58,24 @@ def _mock_result(payload: ApplyPayload) -> ApplyFlowResult:
         submit_button_found=True,
         stopped_before_submit=True,
     )
+
+
+def build_upwork_apply_url(upwork_id: str, job_url: Optional[str] = None) -> str:
+    if job_url:
+        parsed = urllib.parse.urlparse(job_url)
+        clean_path = parsed.path.rstrip("/")
+        if "/freelance-jobs/apply/" in clean_path:
+            return urllib.parse.urlunparse(parsed._replace(query="", fragment=""))
+        if "/jobs/" in clean_path:
+            slug = clean_path.split("/jobs/", 1)[1].strip("/")
+            if slug:
+                return urllib.parse.urljoin(
+                    "https://www.upwork.com",
+                    f"/freelance-jobs/apply/{slug}",
+                )
+
+    cleaned_id = upwork_id.strip().strip("/")
+    return f"{UPWORK_APPLY_URL_PREFIX}{cleaned_id}"
 
 
 async def close_apply_session(proposal_id: int) -> None:
@@ -172,6 +193,7 @@ async def prepare_application(
         response = await page.goto(payload.apply_url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
         if response is not None and response.status >= 400:
             raise RuntimeError(f"Upwork returned HTTP {response.status} for {payload.apply_url}")
+        await ensure_upwork_authenticated_page(page, "Upwork apply form")
         rate_set = False
         rate_inputs = page.locator(UPWORK_RATE_INPUT)
         if await rate_inputs.count() > 0:
@@ -220,4 +242,11 @@ async def prepare_application(
         raise
 
 
-__all__ = ["ApplyFlowResult", "ApplyPayload", "MOCK_APPLY_URL", "close_apply_session", "prepare_application"]
+__all__ = [
+    "ApplyFlowResult",
+    "ApplyPayload",
+    "MOCK_APPLY_URL",
+    "build_upwork_apply_url",
+    "close_apply_session",
+    "prepare_application",
+]

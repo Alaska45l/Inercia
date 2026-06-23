@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import urllib.parse
 import urllib.error
 import urllib.request
@@ -59,7 +60,11 @@ def extract_upwork_id(url: str) -> str:
     parsed = urllib.parse.urlparse(url)
     parts = [part for part in parsed.path.split("/") if part]
     if parts:
-        return parts[-1].strip()
+        last_part = urllib.parse.unquote(parts[-1].strip())
+        cipher_match = re.search(r"(~[A-Za-z0-9_-]+)", last_part)
+        if cipher_match is not None:
+            return cipher_match.group(1)
+        return last_part
     return url.rstrip("/").rsplit("/", 1)[-1]
 
 

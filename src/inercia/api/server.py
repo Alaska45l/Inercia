@@ -41,7 +41,7 @@ from inercia.applicator.auth import (
     is_upwork_login_url,
     verify_upwork_session,
 )
-from inercia.applicator.apply_flow import ApplyPayload, close_apply_session, prepare_application
+from inercia.applicator.apply_flow import ApplyPayload, build_upwork_apply_url, close_apply_session, prepare_application
 from inercia.config import get_settings
 from inercia.db.manager import (
     count_submitted_today,
@@ -55,7 +55,6 @@ from inercia.db.manager import (
     update_job_status,
     update_proposal_status,
 )
-from inercia.scraper.selectors import UPWORK_APPLY_URL_PREFIX
 
 logger = logging.getLogger("inercia.api.server")
 
@@ -462,6 +461,7 @@ def _proposal_with_job(proposal_id: int, db_path: Optional[Path] = None) -> Opti
             proposals.*,
             jobs.id AS joined_job_id,
             jobs.upwork_id,
+            jobs.url AS job_url,
             jobs.title
         FROM proposals
         JOIN jobs ON jobs.id = proposals.job_id
@@ -559,7 +559,10 @@ async def _handle_user_approved(
         await asyncio.to_thread(_update_proposal_cover_letter, proposal_id, selected_cover_letter, db_path)
 
     payload = ApplyPayload(
-        apply_url=f"{UPWORK_APPLY_URL_PREFIX}{row['upwork_id']}",
+        apply_url=build_upwork_apply_url(
+            str(row["upwork_id"]),
+            str(row["job_url"]) if row["job_url"] else None,
+        ),
         bid_rate=float(row["bid_rate"]),
         cover_letter=selected_cover_letter,
         screening_answers=_json_loads_object(row["screening_answers"]),

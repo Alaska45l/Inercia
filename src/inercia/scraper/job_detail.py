@@ -70,7 +70,9 @@ async def extract_job_markdown(
 
     from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
-    from inercia.scraper.engine import NAV_TIMEOUT_MS, block_heavy_resources, browser_context
+    from inercia.applicator.auth import ensure_upwork_authenticated_page
+    from inercia.applicator.session import persistent_upwork_session
+    from inercia.scraper.engine import NAV_TIMEOUT_MS, block_heavy_resources
 
     async def _extract_from_context(active_context: "BrowserContext") -> str:
         page = await active_context.new_page()
@@ -79,11 +81,14 @@ async def extract_job_markdown(
             response = await page.goto(url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
             if response is not None and response.status >= 400:
                 raise RuntimeError(f"Upwork returned HTTP {response.status} for {url}")
+            await ensure_upwork_authenticated_page(page, "Upwork job detail")
             main = page.locator(UPWORK_MAIN)
             await main.wait_for(state="visible", timeout=NAV_TIMEOUT_MS)
             return await main.inner_text(timeout=NAV_TIMEOUT_MS)
         except PlaywrightTimeoutError as exc:
-            raise RuntimeError(f"Timed out extracting Upwork job detail: {url}") from exc
+            raise RuntimeError(
+                f"Timed out extracting Upwork job detail; the page may be unavailable or selectors changed: {url}"
+            ) from exc
         finally:
             await page.close()
 
@@ -92,7 +97,7 @@ async def extract_job_markdown(
         return JobMarkdown(upwork_id=upwork_id, url=url, markdown=text_to_markdown(text))
 
     selected_user_data_dir = user_data_dir or get_settings().upwork_session_dir
-    async with browser_context(str(selected_user_data_dir)) as owned_context:
+    async with persistent_upwork_session(user_data_dir=selected_user_data_dir, headless=True) as owned_context:
         text = await _extract_from_context(owned_context)
     return JobMarkdown(upwork_id=upwork_id, url=url, markdown=text_to_markdown(text))
 

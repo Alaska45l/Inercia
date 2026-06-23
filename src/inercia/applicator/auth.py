@@ -43,6 +43,16 @@ UPWORK_LOGIN_RESPONSE_MARKERS: tuple[str, ...] = (
     "login with",
     "please log in",
 )
+UPWORK_SECURITY_CHALLENGE_MARKERS: tuple[str, ...] = (
+    "cloudflare ray id",
+    "verify you are human",
+    "security check",
+    "checking your browser",
+)
+
+
+class UpworkAuthenticationError(RuntimeError):
+    pass
 
 
 @dataclass(frozen=True)
@@ -67,11 +77,35 @@ def contains_login_marker(text: str) -> bool:
     return any(marker in lowered for marker in UPWORK_LOGIN_RESPONSE_MARKERS)
 
 
+def contains_security_challenge_marker(text: str) -> bool:
+    lowered = text.lower()
+    return any(marker in lowered for marker in UPWORK_SECURITY_CHALLENGE_MARKERS)
+
+
 def _profile_lock_message(exc: Exception) -> str | None:
     text = str(exc).lower()
     if "lock" in text or "another browser" in text or "process singleton" in text:
         return "Upwork session profile is already in use. Close the login or scraping browser and try again."
     return None
+
+
+async def page_body_text(page: object, timeout_ms: int = 5_000) -> str:
+    try:
+        return await page.locator("body").inner_text(timeout=timeout_ms)
+    except Exception:
+        return ""
+
+
+async def ensure_upwork_authenticated_page(page: object, operation: str = "Upwork page") -> None:
+    current_url = str(getattr(page, "url", ""))
+    body_text = await page_body_text(page)
+    state_text = f"{current_url}\n{body_text}"
+    if is_upwork_login_url(current_url) or contains_login_marker(state_text):
+        raise UpworkAuthenticationError(f"{operation} opened a login page; refresh the stored Upwork session")
+    if contains_security_challenge_marker(state_text):
+        raise UpworkAuthenticationError(
+            f"{operation} hit an Upwork security challenge; complete it manually in the login browser"
+        )
 
 
 async def verify_upwork_session(profile_dir: Path, timeout_ms: int = NAV_TIMEOUT_MS) -> UpworkAuthStatus:
@@ -93,10 +127,9 @@ async def verify_upwork_session(profile_dir: Path, timeout_ms: int = NAV_TIMEOUT
             return UpworkAuthStatus(False, f"Upwork session probe returned HTTP {response.status}", current_url)
         if is_upwork_login_url(current_url):
             return UpworkAuthStatus(False, "Upwork redirected to login", current_url)
-        try:
-            body_text = await page.locator("body").inner_text(timeout=5_000)
-        except Exception:
-            body_text = ""
+        body_text = await page_body_text(page)
+        if contains_security_challenge_marker(f"{current_url}\n{body_text}"):
+            return UpworkAuthStatus(False, "Upwork presented a security challenge", current_url)
         if contains_login_marker(f"{current_url}\n{body_text}"):
             return UpworkAuthStatus(False, "Upwork session probe reached a login page", current_url)
         if is_upwork_authenticated_url(current_url):
@@ -126,10 +159,15 @@ __all__ = [
     "UPWORK_AUTHENTICATED_URL_PATTERNS",
     "UPWORK_IN_PROGRESS_URL_FRAGMENTS",
     "UPWORK_LOGIN_RESPONSE_MARKERS",
+    "UPWORK_SECURITY_CHALLENGE_MARKERS",
     "UPWORK_SESSION_PROBE_URL",
+    "UpworkAuthenticationError",
     "UpworkAuthStatus",
     "contains_login_marker",
+    "contains_security_challenge_marker",
+    "ensure_upwork_authenticated_page",
     "is_upwork_authenticated_url",
     "is_upwork_login_url",
+    "page_body_text",
     "verify_upwork_session",
 ]

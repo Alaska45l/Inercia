@@ -2,13 +2,24 @@ from __future__ import annotations
 
 UPWORK_MAIN: str = "main#main"
 UPWORK_FIND_WORK_URL: str = "https://www.upwork.com/nx/find-work/"
+UPWORK_SEARCH_JOBS_URL: str = "https://www.upwork.com/nx/search/jobs/"
 UPWORK_JOB_TITLE: str = "[data-test='job-title'], h1"
-UPWORK_JOB_CARD: str = "[data-test='job-tile'], section[data-test*='job-tile'], article[data-test*='job']"
-UPWORK_JOB_CARD_TITLE_LINK: str = "a[data-test*='job-title'], a[href*='/jobs/'], h2 a"
-UPWORK_JOB_CARD_DESCRIPTION: str = "[data-test*='description'], [data-test*='Description'], p"
-UPWORK_JOB_CARD_AGE: str = "[data-test*='posted'], [data-test*='date'], small, span"
+UPWORK_JOB_CARD: str = (
+    "article[data-ev-job-uid], [data-test='job-tile'], "
+    "section[data-test*='job-tile'], article[data-test*='job']"
+)
+UPWORK_JOB_CARD_TITLE_LINK: str = (
+    "[data-test='job-tile-title-link'], a[data-test*='job-title'], "
+    "a[href*='/jobs/'], h2.job-tile-title a, h2 a"
+)
+UPWORK_JOB_CARD_DESCRIPTION: str = (
+    ".air3-line-clamp-wrapper.clamp p, [data-test*='description'], "
+    "[data-test*='Description'], p"
+)
+UPWORK_JOB_CARD_AGE: str = "[data-test='job-pubilshed-date'], [data-test*='posted'], [data-test*='date'], small, span"
+UPWORK_JOB_CARD_PROPOSALS: str = "[data-test='proposals-tier'], [data-test*='proposals']"
 UPWORK_JOB_CARD_METADATA: str = "[data-test*='metadata'], [data-test*='attrs'], small, span"
-UPWORK_SEARCH_RESULTS_READY: str = "[data-test='job-tile'], section[data-test*='job-tile'], article[data-test*='job']"
+UPWORK_SEARCH_RESULTS_READY: str = UPWORK_JOB_CARD
 UPWORK_SEARCH_INPUT: str = "input[type='search'], input[placeholder*='Search' i]"
 UPWORK_BUTTON_BY_TEXT: str = "button:has-text('{text}'), [role='button']:has-text('{text}')"
 UPWORK_LABEL_BY_TEXT: str = "label:has-text('{text}'), button:has-text('{text}'), span:has-text('{text}')"
@@ -40,6 +51,7 @@ __all__ = [
     "UPWORK_JOB_CARD_AGE",
     "UPWORK_JOB_CARD_DESCRIPTION",
     "UPWORK_JOB_CARD_METADATA",
+    "UPWORK_JOB_CARD_PROPOSALS",
     "UPWORK_JOB_CARD_TITLE_LINK",
     "UPWORK_JOB_TITLE",
     "UPWORK_LABEL_BY_TEXT",
@@ -47,6 +59,7 @@ __all__ = [
     "UPWORK_PAYMENT_VERIFIED_LABEL",
     "UPWORK_RATE_INPUT",
     "UPWORK_SEARCH_INPUT",
+    "UPWORK_SEARCH_JOBS_URL",
     "UPWORK_SEARCH_RESULTS_READY",
     "UPWORK_SCREENING_QUESTIONS",
     "UPWORK_SORT_LABEL",

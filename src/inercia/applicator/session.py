@@ -22,6 +22,13 @@ class UpworkSession:
     context: "BrowserContext"
 
 
+def _profile_lock_message(exc: Exception) -> str | None:
+    text = str(exc).lower()
+    if "lock" in text or "another browser" in text or "process singleton" in text:
+        return "Upwork session profile is already in use. Close the login or scraping browser and try again."
+    return None
+
+
 async def open_persistent_upwork_session(
     user_data_dir: Optional[Path] = None,
     headless: bool = True,
@@ -49,8 +56,11 @@ async def open_persistent_upwork_session(
         context = await playwright.chromium.launch_persistent_context(
             **context_kwargs,
         )
-    except Exception:
+    except Exception as exc:
         await playwright.stop()
+        lock_message = _profile_lock_message(exc)
+        if lock_message is not None:
+            raise RuntimeError(lock_message) from exc
         raise
     logger.info(
         "Persistent Upwork session opened | dir=%s | headless=%s | system_browser=%s",

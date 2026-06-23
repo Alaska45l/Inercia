@@ -143,6 +143,8 @@ jobs:
 
           const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
           config.version = version;
+          config.build = config.build || {};
+          config.build.beforeBuildCommand = "npm --prefix ui run build";
           config.bundle = config.bundle || {};
           config.bundle.externalBin = ["binaries/inercia-server"];
           if (runnerOs === "Linux") {

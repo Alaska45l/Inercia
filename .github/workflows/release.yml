@@ -1,0 +1,229 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  PYTHON_VERSION: "3.11"
+  NODE_VERSION: "22"
+  PYINSTALLER_NAME: inercia-server
+
+jobs:
+  build:
+    name: Build ${{ matrix.platform.name }}
+    runs-on: ${{ matrix.platform.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - name: Linux
+            os: ubuntu-22.04
+          - name: macOS
+            os: macos-latest
+          - name: Windows
+            os: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Ubuntu Tauri dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            curl \
+            file \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            libxdo-dev \
+            patchelf \
+            pkg-config \
+            rpm \
+            wget
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: ui
+        run: npm ci
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          cache-on-failure: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Cache PyInstaller work directory
+        uses: actions/cache@v4
+        with:
+          path: |
+            build
+            ~/.cache/pyinstaller
+          key: pyinstaller-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('pyproject.toml', 'src/**/*.py') }}
+          restore-keys: |
+            pyinstaller-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Install Python dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip wheel
+          python -m pip install -e .
+          python -m pip install pyinstaller
+          PLAYWRIGHT_BROWSERS_PATH=0 python -m playwright install chromium
+
+      - name: Derive release metadata and Tauri config
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          version="${tag#v}"
+          if [[ -z "${version}" || "${version}" == "${tag}" ]]; then
+            echo "Expected a version tag starting with v, got '${tag}'" >&2
+            exit 1
+          fi
+          export APP_VERSION="${version}"
+          echo "APP_VERSION=${version}" >> "${GITHUB_ENV}"
+          node <<'NODE'
+          const fs = require("node:fs");
+          const version = process.env.APP_VERSION;
+          const runnerOs = process.env.RUNNER_OS;
+          const configPath = "src-tauri/tauri.conf.json";
+          const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+          config.version = version;
+          config.bundle = config.bundle || {};
+          config.bundle.externalBin = ["binaries/inercia-server"];
+          if (runnerOs === "Linux") {
+            config.bundle.targets = ["deb", "rpm"];
+          } else if (runnerOs === "macOS") {
+            config.bundle.targets = ["dmg"];
+          } else if (runnerOs === "Windows") {
+            config.bundle.targets = ["nsis"];
+          } else {
+            throw new Error(`Unsupported RUNNER_OS: ${runnerOs}`);
+          }
+          fs.writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
+
+          const cargoPath = "src-tauri/Cargo.toml";
+          const cargo = fs.readFileSync(cargoPath, "utf8").replace(
+            /^version\s*=\s*"[^"]+"/m,
+            `version = "${version}"`
+          );
+          fs.writeFileSync(cargoPath, cargo);
+          NODE
+
+      - name: Build Python sidecar with PyInstaller
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${RUNNER_OS}" == "Windows" ]]; then
+            add_data_sep=";"
+          else
+            add_data_sep=":"
+          fi
+
+          pyinstaller \
+            --noconfirm \
+            --clean \
+            --onefile \
+            --name "${PYINSTALLER_NAME}" \
+            --collect-all playwright \
+            --add-data "src/inercia/db/schema.sql${add_data_sep}inercia/db" \
+            --add-data "src/inercia/cv/templates/cv_upwork.typ${add_data_sep}inercia/cv/templates" \
+            src/inercia/__main__.py
+
+      - name: Install Tauri sidecar with target triple suffix
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          arch="$(uname -m)"
+          case "${arch}" in
+            x86_64|amd64|AMD64)
+              cpu="x86_64"
+              ;;
+            arm64|aarch64)
+              cpu="aarch64"
+              ;;
+            *)
+              echo "Unsupported runner architecture: ${arch}" >&2
+              exit 1
+              ;;
+          esac
+
+          case "${RUNNER_OS}" in
+            Linux)
+              os_triple="${cpu}-unknown-linux-gnu"
+              source_binary="dist/${PYINSTALLER_NAME}"
+              target_binary="src-tauri/binaries/${PYINSTALLER_NAME}-${os_triple}"
+              ;;
+            macOS)
+              os_triple="${cpu}-apple-darwin"
+              source_binary="dist/${PYINSTALLER_NAME}"
+              target_binary="src-tauri/binaries/${PYINSTALLER_NAME}-${os_triple}"
+              ;;
+            Windows)
+              os_triple="${cpu}-pc-windows-msvc"
+              source_binary="dist/${PYINSTALLER_NAME}.exe"
+              target_binary="src-tauri/binaries/${PYINSTALLER_NAME}-${os_triple}.exe"
+              ;;
+            *)
+              echo "Unsupported runner OS: ${RUNNER_OS}" >&2
+              exit 1
+              ;;
+          esac
+
+          if [[ ! -f "${source_binary}" ]]; then
+            echo "PyInstaller output not found at ${source_binary}" >&2
+            find dist -maxdepth 3 -type f -print >&2 || true
+            exit 1
+          fi
+
+          mkdir -p src-tauri/binaries
+          cp "${source_binary}" "${target_binary}"
+          chmod +x "${target_binary}" || true
+          echo "TAURI_TARGET_TRIPLE=${os_triple}" >> "${GITHUB_ENV}"
+          echo "TAURI_SIDECAR_PATH=${target_binary}" >> "${GITHUB_ENV}"
+          ls -la src-tauri/binaries
+
+      - name: Build and publish Tauri bundle
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: src-tauri
+          tagName: ${{ github.ref_name }}
+          releaseName: Inercia ${{ github.ref_name }}
+          releaseBody: Inercia desktop installers for ${{ github.ref_name }}.
+          releaseDraft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          includeDebug: false
+          args: --verbose

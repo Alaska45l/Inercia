@@ -3,25 +3,12 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from pydantic import BaseModel, Field
-
 from inercia.ai.llm import GEMINI_PRO_MODEL, StructuredLLM
 from inercia.ai.prompts import COPYWRITER_SYSTEM_PROMPT, FORBIDDEN_COPY_TERMS
 from inercia.ai.schemas import CoverLetter, JobDetail
-from inercia.config import get_settings
 from inercia.cv.profiles import CVProfile, get_upwork_profile
 
 logger = logging.getLogger("inercia.ai.nodes.copywriter")
-
-
-class _ScreeningAnswerItem(BaseModel):
-    question: str
-    answer: str
-
-
-class _CoverLetterLLMResponse(BaseModel):
-    letter: str
-    screening_answers: list[_ScreeningAnswerItem] = Field(default_factory=list)
 
 
 def _word_count(text: str) -> int:
@@ -44,19 +31,8 @@ def _sanitize_letter(letter: str) -> str:
     return cleaned
 
 
-def _response_from_cover_letter(cover_letter: CoverLetter) -> _CoverLetterLLMResponse:
-    return _CoverLetterLLMResponse(
-        letter=cover_letter.letter,
-        screening_answers=[
-            _ScreeningAnswerItem(question=question, answer=answer)
-            for question, answer in cover_letter.screening_answers.items()
-        ],
-    )
-
-
-def _cover_letter_from_response(response: _CoverLetterLLMResponse) -> CoverLetter:
-    answers = {item.question: item.answer for item in response.screening_answers}
-    return CoverLetter(letter=_sanitize_letter(response.letter), screening_answers=answers)
+def _sanitize_cover_letter(cover_letter: CoverLetter) -> CoverLetter:
+    return cover_letter.model_copy(update={"letter": _sanitize_letter(cover_letter.letter)})
 
 
 def deterministic_cover_letter(
@@ -102,33 +78,21 @@ async def write_cover_letter(
     critic_issues: Optional[list[str]] = None,
 ) -> CoverLetter:
     selected_profile = profile or get_upwork_profile()
-    fallback = lambda: _response_from_cover_letter(
-        deterministic_cover_letter(job_detail, selected_profile, critic_issues)
-    )
+    fallback = lambda: deterministic_cover_letter(job_detail, selected_profile, critic_issues)
     user_prompt = (
         f"Profile:\n{selected_profile}\n\nJob:\n{job_detail.model_dump_json()}\n\n"
         f"Previous critic issues: {critic_issues or []}\n\n"
-        "Return screening_answers as an array of objects with question and answer fields."
+        "Return screening_answers as a JSON object keyed by the exact screening question text."
     )
-    llm = StructuredLLM[_CoverLetterLLMResponse]()
-    settings = get_settings()
-    if settings.opencode_api_key:
-        response = await llm.generate_opencode_structured(
-            model=settings.opencode_copywriter_model,
-            system_prompt=COPYWRITER_SYSTEM_PROMPT,
-            user_prompt=user_prompt,
-            response_model=_CoverLetterLLMResponse,
-            fallback_factory=fallback,
-        )
-    else:
-        response = await llm.generate_structured(
-            model=GEMINI_PRO_MODEL,
-            system_prompt=COPYWRITER_SYSTEM_PROMPT,
-            user_prompt=user_prompt,
-            response_model=_CoverLetterLLMResponse,
-            fallback_factory=fallback,
-        )
-    cover_letter = _cover_letter_from_response(response)
+    llm = StructuredLLM[CoverLetter]()
+    response = await llm.generate_structured(
+        model=GEMINI_PRO_MODEL,
+        system_prompt=COPYWRITER_SYSTEM_PROMPT,
+        user_prompt=user_prompt,
+        response_model=CoverLetter,
+        fallback_factory=fallback,
+    )
+    cover_letter = _sanitize_cover_letter(response)
     logger.info("Cover letter drafted | title=%s | words=%d", job_detail.title, _word_count(cover_letter.letter))
     return cover_letter
 

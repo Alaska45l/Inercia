@@ -34,10 +34,6 @@ class UpworkSearchFilters:
 @dataclass(frozen=True)
 class Settings:
     gemini_api_key: str
-    opencode_api_key: str
-    opencode_base_url: str
-    opencode_copywriter_model: str
-    opencode_user_agent: str
     upwork_session_dir: Path
     db_path: Path
     daily_proposal_cap: int
@@ -92,13 +88,6 @@ DEFAULT_UPWORK_SEARCH_FILTERS = UpworkSearchFilters(
 
 DEFAULT_SETTING_VALUES: dict[str, str] = {
     "GEMINI_API_KEY": "",
-    "OPENCODE_API_KEY": "",
-    "OPENCODE_BASE_URL": "https://opencode.ai/zen/go/v1/chat/completions",
-    "OPENCODE_COPYWRITER_MODEL": "kimi-k2.6",
-    "OPENCODE_USER_AGENT": (
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-    ),
     "UPWORK_SESSION_DIR": ".upwork-session",
     "DB_PATH": "inercia.db",
     "DAILY_PROPOSAL_CAP": "12",
@@ -270,10 +259,6 @@ def get_settings(env_path: Optional[Path] = None, db_path: Optional[Path] = None
 
     return Settings(
         gemini_api_key=value("GEMINI_API_KEY"),
-        opencode_api_key=value("OPENCODE_API_KEY"),
-        opencode_base_url=value("OPENCODE_BASE_URL"),
-        opencode_copywriter_model=value("OPENCODE_COPYWRITER_MODEL"),
-        opencode_user_agent=value("OPENCODE_USER_AGENT"),
         upwork_session_dir=_resolve_project_path(value("UPWORK_SESSION_DIR")),
         db_path=_resolve_project_path(value("DB_PATH")),
         daily_proposal_cap=_parse_int(

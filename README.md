@@ -18,7 +18,7 @@
 
 ## What Inercia Does
 
-Inercia is a local-first proposal assistant for Upwork. It collects jobs from either an offline RSS fixture or an explicitly enabled authenticated Upwork search session, stores normalized jobs in SQLite, scores each job with deterministic ROI rules, drafts proposal text through an AI pipeline with deterministic fallbacks, and exposes pending proposals in a Tauri/Svelte dashboard for human approval.
+Inercia is a local-first proposal assistant for Upwork. It collects jobs from either an offline RSS fixture or an explicitly enabled authenticated Upwork search session, stores normalized jobs in SQLite, scores each job with Gemini ROI analysis constrained by deterministic hard gates, drafts proposal text through an AI pipeline with deterministic fallbacks, and exposes pending proposals in a Tauri/Svelte dashboard for human approval.
 
 The project is not a submit bot. The live apply path opens a visible Upwork application form, fills fields when selectors still match, and stops before the final Submit action. The human operator remains responsible for reviewing text, checking the Upwork page, and deciding whether to submit.
 
@@ -30,7 +30,7 @@ The project is not a submit bot. The live apply path opens a visible Upwork appl
 | Default network mode | Offline. `ALLOW_UPWORK_NETWORK=false` uses local mock RSS and mock job details. |
 | Live Upwork mode | Opt-in only. Requires a manually created Chromium profile and a verified logged-in Upwork session. |
 | Submission behavior | The code intentionally stops before Submit. Approval prepares the form and logs local connect spend. |
-| AI dependencies | Gemini is used for extraction and critic when configured. Copywriting can use OpenCode when configured, otherwise Gemini. Every node has a deterministic fallback. |
+| AI dependencies | Native Gemini structured output is used for extraction, ROI scoring, copywriting, and critic review when configured. Every node has a deterministic fallback. |
 | CV generation | A Typst CV builder exists, but the default proposal pipeline currently does not attach generated PDFs automatically. |
 | Security model | Single-user local app. The WebSocket API binds to localhost by default and is not designed as a multi-user service. |
 
@@ -42,7 +42,7 @@ The project is not a submit bot. The live apply path opens a visible Upwork appl
 | Authenticated discovery | Use the stored Upwork browser profile, apply configured filters, ignore stale jobs, and skip known blacklist terms. | `src/inercia/scraper/filter_scraper.py`, `src/inercia/applicator/auth.py` |
 | Detail extraction | Convert job pages or fixtures into compact markdown for pipeline processing. | `src/inercia/scraper/job_detail.py` |
 | ROI scoring | Score jobs using skill overlap, connect cost, client spend, hire rate, reviews, floor rates, and blacklist keywords. | `src/inercia/ai/nodes/investor.py` |
-| Proposal drafting | Produce cover letters and screening answers through OpenCode or Gemini, with deterministic offline output when keys are missing. | `src/inercia/ai/nodes/copywriter.py`, `src/inercia/ai/llm.py` |
+| Proposal drafting | Produce cover letters and screening answers through Gemini Pro, with deterministic offline output when keys are missing. | `src/inercia/ai/nodes/copywriter.py`, `src/inercia/ai/llm.py` |
 | Critic pass | Reject template-like openings, excessive length, missing signature, forbidden phrasing, and weak screening answers. | `src/inercia/ai/nodes/critic.py` |
 | Local persistence | Store jobs, proposals, connect logs, runtime settings, and migration defaults in SQLite. | `src/inercia/db/schema.sql`, `src/inercia/db/manager.py` |
 | Desktop approval UI | Show pending proposals, stats, connects, jobs, scraper controls, login state, and settings. | `ui/src/App.svelte`, `ui/src/lib/stores/proposals.ts` |
@@ -70,8 +70,8 @@ python -m inercia scrape "python playwright"
 
 python -m inercia process --limit 5
   -> extractor fallback or Gemini
-  -> deterministic ROI investor
-  -> copywriter fallback, Gemini, or OpenCode
+  -> investor fallback or Gemini Flash
+  -> copywriter fallback or Gemini Pro
   -> critic fallback or Gemini
   -> pending proposal rows
 ```
@@ -150,7 +150,7 @@ In offline mode, approval uses the mock apply result and still updates local pro
 | System Chromium or Chrome | The login browser opened by the API searches for `chromium`, `google-chrome`, or `google-chrome-stable`. |
 | Typst CLI | Optional today. Required only when calling the CV PDF builder directly. |
 | Upwork account | Required only for live network mode. The app does not automate login creation, CAPTCHA, MFA, or access controls. |
-| Gemini or OpenCode API key | Optional. Missing keys trigger deterministic fallbacks for local development and tests. |
+| Gemini API key | Optional. Missing keys trigger deterministic fallbacks for local development and tests. |
 
 ## Installation
 
@@ -201,11 +201,7 @@ Settings are resolved in this order:
 
 | Setting | Default | Purpose |
 | :--- | :--- | :--- |
-| `GEMINI_API_KEY` | empty | Enables Gemini structured calls for extraction and critic; also used for copywriting when OpenCode is not configured. |
-| `OPENCODE_API_KEY` | empty | Enables OpenCode-compatible copywriter calls. |
-| `OPENCODE_BASE_URL` | `https://opencode.ai/zen/go/v1/chat/completions` | Chat completions endpoint for OpenCode-compatible copywriting. |
-| `OPENCODE_COPYWRITER_MODEL` | `kimi-k2.6` | Copywriter model sent to the OpenCode endpoint. |
-| `OPENCODE_USER_AGENT` | Chrome-like Linux UA | Request user agent for OpenCode calls. |
+| `GEMINI_API_KEY` | empty | Enables native Gemini structured calls across the AI pipeline. |
 | `UPWORK_SESSION_DIR` | `.upwork-session` | Persistent browser profile for manual Upwork login and live scraping. |
 | `DB_PATH` | `inercia.db` | SQLite database path. |
 | `DAILY_PROPOSAL_CAP` | `12` | Maximum submitted proposals allowed per day before pipeline/approval stops. |
@@ -309,17 +305,16 @@ Extractor
   -> Gemini Flash structured extraction or deterministic parser
 
 Investor
-  -> deterministic ROI score
+  -> Gemini Flash ROI score or deterministic ROI fallback
   -> blacklist and floor-rate checks
   -> route low ROI jobs to blacklisted
 
 Copywriter
-  -> OpenCode when OPENCODE_API_KEY is set
-  -> otherwise Gemini Pro when GEMINI_API_KEY is set
+  -> Gemini Pro when GEMINI_API_KEY is set
   -> otherwise deterministic letter and screening-answer fallback
 
 Critic
-  -> Gemini Flash review or deterministic review
+  -> Gemini Pro review or deterministic review
   -> one retry back to Copywriter when issues are found and attempts remain
 ```
 

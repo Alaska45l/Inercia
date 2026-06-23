@@ -92,10 +92,6 @@ export interface UpworkSearchFilters {
 
 export interface SettingsState {
   gemini_api_key: string;
-  opencode_api_key: string;
-  opencode_base_url: string;
-  opencode_copywriter_model: string;
-  opencode_user_agent: string;
   daily_proposal_cap: number;
   floor_hourly_rate: number;
   floor_fixed_rate: number;
@@ -105,7 +101,6 @@ export interface SettingsState {
   ws_port: number;
   login_debug_port: number;
   has_gemini_key: boolean;
-  has_opencode_key: boolean;
   scheduler_interval_min_minutes: number;
   scheduler_interval_max_minutes: number;
   blacklist_keywords: string[];

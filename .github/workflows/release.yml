@@ -28,8 +28,6 @@ jobs:
         platform:
           - name: Linux
             os: ubuntu-22.04
-          - name: macOS
-            os: macos-latest
           - name: Windows
             os: windows-latest
 
@@ -105,26 +103,50 @@ jobs:
         run: |
           set -euo pipefail
           tag="${GITHUB_REF_NAME}"
-          version="${tag#v}"
-          if [[ -z "${version}" || "${version}" == "${tag}" ]]; then
+          if [[ -z "${tag}" || "${tag}" == "${tag#v}" ]]; then
             echo "Expected a version tag starting with v, got '${tag}'" >&2
             exit 1
           fi
-          export APP_VERSION="${version}"
-          echo "APP_VERSION=${version}" >> "${GITHUB_ENV}"
+          export RELEASE_TAG="${tag}"
           node <<'NODE'
           const fs = require("node:fs");
-          const version = process.env.APP_VERSION;
+          const tag = process.env.RELEASE_TAG;
           const runnerOs = process.env.RUNNER_OS;
+          const envPath = process.env.GITHUB_ENV;
           const configPath = "src-tauri/tauri.conf.json";
+
+          function normalizeSemverTag(rawTag) {
+            const rawVersion = rawTag.replace(/^v/, "");
+            const semver = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
+            if (semver.test(rawVersion)) return rawVersion;
+
+            const pep440 = rawVersion.match(/^(\d+\.\d+\.\d+)(a|b|rc)(\d+)(?:\+([0-9A-Za-z._-]+))?$/);
+            if (pep440) {
+              const labels = { a: "alpha", b: "beta", rc: "rc" };
+              const base = pep440[1];
+              const label = labels[pep440[2]];
+              const number = pep440[3];
+              const build = pep440[4] ? `+${pep440[4].replace(/[^0-9A-Za-z-]+/g, ".")}` : "";
+              return `${base}-${label}.${number}${build}`;
+            }
+
+            throw new Error(
+              `Release tag '${rawTag}' cannot be converted to a Tauri semver version. ` +
+              "Use vMAJOR.MINOR.PATCH, vMAJOR.MINOR.PATCH-prerelease, or PEP 440 forms like v0.3.0a0."
+            );
+          }
+
+          const version = normalizeSemverTag(tag);
+          const prerelease = version.includes("-");
+          fs.appendFileSync(envPath, `APP_VERSION=${version}\n`);
+          fs.appendFileSync(envPath, `APP_PRERELEASE=${prerelease}\n`);
+
           const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
           config.version = version;
           config.bundle = config.bundle || {};
           config.bundle.externalBin = ["binaries/inercia-server"];
           if (runnerOs === "Linux") {
             config.bundle.targets = ["deb", "rpm"];
-          } else if (runnerOs === "macOS") {
-            config.bundle.targets = ["dmg"];
           } else if (runnerOs === "Windows") {
             config.bundle.targets = ["nsis"];
           } else {
@@ -181,17 +203,20 @@ jobs:
 
           case "${RUNNER_OS}" in
             Linux)
-              os_triple="${cpu}-unknown-linux-gnu"
-              source_binary="dist/${PYINSTALLER_NAME}"
-              target_binary="src-tauri/binaries/${PYINSTALLER_NAME}-${os_triple}"
-              ;;
-            macOS)
-              os_triple="${cpu}-apple-darwin"
+              if [[ "${cpu}" != "x86_64" ]]; then
+                echo "Unsupported Linux runner architecture: ${arch}" >&2
+                exit 1
+              fi
+              os_triple="x86_64-unknown-linux-gnu"
               source_binary="dist/${PYINSTALLER_NAME}"
               target_binary="src-tauri/binaries/${PYINSTALLER_NAME}-${os_triple}"
               ;;
             Windows)
-              os_triple="${cpu}-pc-windows-msvc"
+              if [[ "${cpu}" != "x86_64" ]]; then
+                echo "Unsupported Windows runner architecture: ${arch}" >&2
+                exit 1
+              fi
+              os_triple="x86_64-pc-windows-msvc"
               source_binary="dist/${PYINSTALLER_NAME}.exe"
               target_binary="src-tauri/binaries/${PYINSTALLER_NAME}-${os_triple}.exe"
               ;;
@@ -224,6 +249,6 @@ jobs:
           releaseName: Inercia ${{ github.ref_name }}
           releaseBody: Inercia desktop installers for ${{ github.ref_name }}.
           releaseDraft: false
-          prerelease: ${{ contains(github.ref_name, '-') }}
+          prerelease: ${{ env.APP_PRERELEASE }}
           includeDebug: false
           args: --verbose

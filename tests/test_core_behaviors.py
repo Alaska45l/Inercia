@@ -111,14 +111,11 @@ class SettingsPayloadTests(unittest.TestCase):
             db_path = Path(tmpdir) / "inercia.db"
             init_db(db_path)
             set_session_value("GEMINI_API_KEY", "secret-gemini", db_path)
-            set_session_value("OPENCODE_API_KEY", "secret-opencode", db_path)
 
             payload = _settings_payload(db_path)
 
         self.assertEqual(payload["gemini_api_key"], "")
-        self.assertEqual(payload["opencode_api_key"], "")
         self.assertTrue(payload["has_gemini_key"])
-        self.assertTrue(payload["has_opencode_key"])
 
 
 class LoginStatusTests(unittest.TestCase):

@@ -207,10 +207,6 @@ class UpworkSearchFiltersData(TypedDict):
 
 class SettingsData(TypedDict):
     gemini_api_key: str
-    opencode_api_key: str
-    opencode_base_url: str
-    opencode_copywriter_model: str
-    opencode_user_agent: str
     daily_proposal_cap: int
     floor_hourly_rate: float
     floor_fixed_rate: float
@@ -220,7 +216,6 @@ class SettingsData(TypedDict):
     ws_port: int
     login_debug_port: int
     has_gemini_key: bool
-    has_opencode_key: bool
     scheduler_interval_min_minutes: int
     scheduler_interval_max_minutes: int
     blacklist_keywords: list[str]

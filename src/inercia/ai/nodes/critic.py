@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 
-from inercia.ai.llm import GEMINI_FLASH_MODEL, StructuredLLM
+from inercia.ai.llm import GEMINI_PRO_MODEL, StructuredLLM
 from inercia.ai.prompts import CRITIC_SYSTEM_PROMPT, FORBIDDEN_COPY_TERMS, FORBIDDEN_OPENINGS
 from inercia.ai.schemas import CoverLetter, CriticReview, JobDetail
 
@@ -43,7 +43,7 @@ async def review_cover_letter(cover_letter: CoverLetter, job_detail: JobDetail) 
     user_prompt = f"Job:\n{job_detail.model_dump_json()}\n\nCover letter:\n{cover_letter.model_dump_json()}"
     llm = StructuredLLM[CriticReview]()
     return await llm.generate_structured(
-        model=GEMINI_FLASH_MODEL,
+        model=GEMINI_PRO_MODEL,
         system_prompt=CRITIC_SYSTEM_PROMPT,
         user_prompt=user_prompt,
         response_model=CriticReview,

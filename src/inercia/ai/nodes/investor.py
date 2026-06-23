@@ -5,6 +5,8 @@ import re
 from pathlib import Path
 from typing import Optional
 
+from inercia.ai.llm import GEMINI_FLASH_MODEL, StructuredLLM
+from inercia.ai.prompts import INVESTOR_SYSTEM_PROMPT
 from inercia.ai.schemas import JobDetail, ROIScore
 from inercia.config import DEFAULT_BLACKLIST_KEYWORDS, get_settings
 from inercia.cv.profiles import get_upwork_profile
@@ -81,4 +83,53 @@ def score_job(job_detail: JobDetail, db_path: Optional[Path] = None) -> ROIScore
     return score
 
 
-__all__ = ["BLACKLIST_KEYWORDS", "ROI_THRESHOLD", "score_job"]
+def _enforce_hard_rejections(baseline: ROIScore, candidate: ROIScore) -> ROIScore:
+    hard_rejection_reasons = {
+        "blacklist_keyword",
+        "fixed_budget_below_floor",
+        "hourly_rate_below_floor",
+    }
+    if baseline.blacklisted or hard_rejection_reasons.intersection(baseline.reasons):
+        reasons = list(dict.fromkeys([*candidate.reasons, *baseline.reasons]))
+        if "roi_below_threshold" not in reasons:
+            reasons.append("roi_below_threshold")
+        return candidate.model_copy(
+            update={
+                "score": min(candidate.score, baseline.score),
+                "passed": False,
+                "blacklisted": baseline.blacklisted,
+                "reasons": reasons,
+            }
+        )
+    if candidate.score < ROI_THRESHOLD and candidate.passed:
+        reasons = [reason for reason in candidate.reasons if reason != "roi_passed"]
+        reasons.append("roi_below_threshold")
+        return candidate.model_copy(update={"passed": False, "reasons": list(dict.fromkeys(reasons))})
+    return candidate
+
+
+async def score_job_with_llm(job_detail: JobDetail, db_path: Optional[Path] = None) -> ROIScore:
+    baseline = score_job(job_detail, db_path=db_path)
+    settings = get_settings(db_path=db_path)
+    fallback = lambda: baseline
+    user_prompt = (
+        f"Configured hourly floor: {settings.floor_hourly_rate}\n"
+        f"Configured fixed floor: {settings.floor_fixed_rate}\n"
+        f"ROI pass threshold: {ROI_THRESHOLD}\n"
+        f"Deterministic baseline:\n{baseline.model_dump_json()}\n\n"
+        f"Job detail:\n{job_detail.model_dump_json()}"
+    )
+    llm = StructuredLLM[ROIScore]()
+    candidate = await llm.generate_structured(
+        model=GEMINI_FLASH_MODEL,
+        system_prompt=INVESTOR_SYSTEM_PROMPT,
+        user_prompt=user_prompt,
+        response_model=ROIScore,
+        fallback_factory=fallback,
+    )
+    score = _enforce_hard_rejections(baseline, candidate)
+    logger.info("Gemini ROI scored | title=%s | roi=%.2f | passed=%s", job_detail.title, score.score, score.passed)
+    return score
+
+
+__all__ = ["BLACKLIST_KEYWORDS", "ROI_THRESHOLD", "score_job", "score_job_with_llm"]

@@ -28,7 +28,7 @@
 
   function blurSetting(event: FocusEvent, key: string): void {
     const input = event.currentTarget as HTMLInputElement;
-    if ((key === 'GEMINI_API_KEY' || key === 'OPENCODE_API_KEY') && input.value.trim() === '') return;
+    if (key === 'GEMINI_API_KEY' && input.value.trim() === '') return;
     setSetting(key, input.value);
   }
 
@@ -129,26 +129,6 @@
         <label for="gemini-key">GEMINI API KEY</label>
         <input id="gemini-key" class="control-input" type="password" value="" placeholder={$settingsState.has_gemini_key ? 'Stored locally' : ''} on:blur={(event) => blurSetting(event, 'GEMINI_API_KEY')} />
         <span class={$settingsState.has_gemini_key ? 'key-ok' : 'key-err'}>{$settingsState.has_gemini_key ? 'set' : 'missing'}</span>
-      </div>
-      <div class="setting-row">
-        <label for="opencode-key">OPENCODE API KEY</label>
-        <input id="opencode-key" class="control-input" type="password" value="" placeholder={$settingsState.has_opencode_key ? 'Stored locally' : ''} on:blur={(event) => blurSetting(event, 'OPENCODE_API_KEY')} />
-        <span class={$settingsState.has_opencode_key ? 'key-ok' : 'key-err'}>{$settingsState.has_opencode_key ? 'set' : 'missing'}</span>
-      </div>
-      <div class="setting-row">
-        <label for="opencode-url">OPENCODE URL</label>
-        <input id="opencode-url" class="control-input" type="text" value={$settingsState.opencode_base_url} on:blur={(event) => blurSetting(event, 'OPENCODE_BASE_URL')} />
-        <span>editable</span>
-      </div>
-      <div class="setting-row">
-        <label for="opencode-model">COPYWRITER MODEL</label>
-        <input id="opencode-model" class="control-input" type="text" value={$settingsState.opencode_copywriter_model} on:blur={(event) => blurSetting(event, 'OPENCODE_COPYWRITER_MODEL')} />
-        <span>editable</span>
-      </div>
-      <div class="setting-row">
-        <label for="opencode-agent">OPENCODE AGENT</label>
-        <input id="opencode-agent" class="control-input" type="text" value={$settingsState.opencode_user_agent} on:blur={(event) => blurSetting(event, 'OPENCODE_USER_AGENT')} />
-        <span>editable</span>
       </div>
       <div class="setting-row">
         <label for="daily-cap">DAILY CAP</label>

@@ -123,10 +123,6 @@ def _settings_payload(db_path: Optional[Path]) -> dict[str, Any]:
     settings = get_settings(db_path=db_path)
     return {
         "gemini_api_key": "",
-        "opencode_api_key": "",
-        "opencode_base_url": settings.opencode_base_url,
-        "opencode_copywriter_model": settings.opencode_copywriter_model,
-        "opencode_user_agent": settings.opencode_user_agent,
         "daily_proposal_cap": settings.daily_proposal_cap,
         "floor_hourly_rate": settings.floor_hourly_rate,
         "floor_fixed_rate": settings.floor_fixed_rate,
@@ -136,7 +132,6 @@ def _settings_payload(db_path: Optional[Path]) -> dict[str, Any]:
         "ws_port": settings.ws_port,
         "login_debug_port": settings.login_debug_port,
         "has_gemini_key": bool(settings.gemini_api_key),
-        "has_opencode_key": bool(settings.opencode_api_key),
         "scheduler_interval_min_minutes": settings.scheduler_interval_min_minutes,
         "scheduler_interval_max_minutes": settings.scheduler_interval_max_minutes,
         "blacklist_keywords": settings.blacklist_keywords,
@@ -891,10 +886,6 @@ async def _handle_set_setting(payload: dict[str, Any], websocket: Any, db_path: 
     value = str(payload.get("value", ""))
     allowed_keys = {
         "GEMINI_API_KEY",
-        "OPENCODE_API_KEY",
-        "OPENCODE_BASE_URL",
-        "OPENCODE_COPYWRITER_MODEL",
-        "OPENCODE_USER_AGENT",
         "DAILY_PROPOSAL_CAP",
         "FLOOR_HOURLY_RATE",
         "FLOOR_FIXED_RATE",

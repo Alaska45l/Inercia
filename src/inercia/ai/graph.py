@@ -10,7 +10,7 @@ from typing import Any, Optional, TypedDict
 from inercia.ai.nodes.copywriter import write_cover_letter
 from inercia.ai.nodes.critic import review_cover_letter
 from inercia.ai.nodes.extractor import extract_job_detail
-from inercia.ai.nodes.investor import score_job
+from inercia.ai.nodes.investor import score_job_with_llm
 from inercia.ai.schemas import CoverLetter, CriticReview, JobDetail, ProposalPackage, ROIScore
 from inercia.applicator.rate_calculator import compute_bid_rate
 from inercia.config import get_settings
@@ -68,7 +68,7 @@ async def _extractor_node(state: PipelineState) -> PipelineState:
 
 
 async def _investor_node(state: PipelineState) -> PipelineState:
-    roi = score_job(state["job_detail"], db_path=state.get("db_path"))
+    roi = await score_job_with_llm(state["job_detail"], db_path=state.get("db_path"))
     return {**state, "roi_score": roi, "status": "scored" if roi.passed else "blacklisted"}
 
 

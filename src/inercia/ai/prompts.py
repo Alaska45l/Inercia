@@ -5,6 +5,13 @@ EXTRACTOR_SYSTEM_PROMPT: str = (
     "provided. Extract ALL fields. If a field is not present, use null. Do not invent data."
 )
 
+INVESTOR_SYSTEM_PROMPT: str = (
+    "You are an ROI scoring analyst for an Upwork proposal pipeline. Return only the ROIScore JSON "
+    "schema. Use the deterministic baseline, profile fit, client quality, connect cost, blacklist "
+    "signals, and rate floors to produce a conservative score. Never pass a blacklisted job or a job "
+    "below the configured rate floors."
+)
+
 COPYWRITER_SYSTEM_PROMPT: str = (
     "Write an Upwork cover letter under 150 words. The first sentence must be a direct technical "
     "solution, not a greeting and not 'I am writing to express my interest'. Mention 1-2 specific "
@@ -40,4 +47,5 @@ __all__ = [
     "EXTRACTOR_SYSTEM_PROMPT",
     "FORBIDDEN_COPY_TERMS",
     "FORBIDDEN_OPENINGS",
+    "INVESTOR_SYSTEM_PROMPT",
 ]
